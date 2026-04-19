@@ -1,0 +1,161 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://openrouter.ai https://tessdata.projectnaptha.com; worker-src 'self' blob:; object-src 'none'; base-uri 'none'">
+    <title>SongBinder</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#000000">
+    <link rel="icon" href="assets/icons/icon-192x192.png">
+    <link href="lib/fontawesome/css/all.min.css" rel="stylesheet">
+    <link href="lib/fontawesome/css/fa-local.css" rel="stylesheet">
+    <link href="assets/fonts/neonderthaw/neonderthaw.css" rel="stylesheet">
+    <script src="lib/fuse.js" defer></script>
+    <script src="lib/sortable.min.js" defer></script>
+    <script src="lib/idb.min.js" defer></script>
+    <script src="lib/mammoth.browser.min.js" defer></script>
+    <script src="lib/tesseract/tesseract.min.js" defer></script>
+</head>
+<body>
+<a href="#app" class="skip-link">Skip to content</a>
+<div class="main-box">
+ <header class="app-header">
+  <div class="header-top">
+    <div class="app-logo">
+  <img src="assets/images/logo-dark.png" alt="App Logo" class="app-logo-img main-logo-img" loading="lazy" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
+</div>
+  <button id="theme-toggle-btn" class="icon-btn theme-toggle-btn" title="Toggle Light/Dark">
+  <i class="fas fa-adjust"></i>
+</button>
+   
+  </div>
+  <nav class="app-nav" aria-label="Main tabs" role="tablist">
+    <button type="button" class="nav-button active" role="tab" aria-selected="true" tabindex="0" data-tab="songs" aria-controls="songs" aria-label="Songs tab">
+      <i class="fas fa-book"></i> Songs
+    </button>
+    <button type="button" class="nav-button" role="tab" aria-selected="false" tabindex="-1" data-tab="setlists" aria-controls="setlists" aria-label="Setlists tab">
+      <i class="fas fa-list"></i> Setlists
+    </button>
+    <button type="button" class="nav-button" role="tab" aria-selected="false" tabindex="-1" data-tab="performance" aria-controls="performance" aria-label="Performance tab">
+      <i class="fas fa-music"></i> Lyrics
+    </button>
+  </nav>
+<div id="tab-toolbar" class="toolbar"></div>
+</header>
+    <main id="app">
+        <section id="songs" class="tab active">
+            <div class="page-content songs-page">
+                <div id="song-list" class="song-list"></div>
+            </div>
+        </section>
+
+        <section id="setlists" class="tab">
+            <div class="page-content setlists-page">
+                    
+                <div class="setlist-editor">
+                    <div class="column">
+                        <h3>Available Songs</h3>
+                        <div id="available-songs" class="song-container"></div>
+                    </div>
+                    <div class="column">
+                        <h3 id="current-setlist-title">Current Setlist</h3>
+                        <div id="current-setlist-songs" class="song-container"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="performance" class="tab">
+            <div class="page-content performance-page">
+                <div id="performance-song-list" class="song-list"></div>
+            </div>
+        </section>
+    </main>
+    <div id="song-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="song-modal-title">
+        <div class="modal-content">
+            <h2 id="song-modal-title">Add Song</h2>
+            <input type="text" id="song-title-input" placeholder="Song Title">
+            <textarea id="song-lyrics-input" placeholder="Enter lyrics..."></textarea>
+            <div class="modal-actions">
+                <button id="save-song-btn" class="btn primary">Save</button>
+                <button id="cancel-song-btn" class="btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="setlist-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="setlist-modal-title">
+        <div class="modal-content">
+            <h2 id="setlist-modal-title">New Setlist</h2>
+            <input type="text" id="setlist-name-input" placeholder="Setlist Name">
+            <div class="modal-actions">
+                <button id="save-setlist-btn" class="btn primary">Save</button>
+                <button id="cancel-setlist-btn" class="btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div id="export-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+      <div class="modal-content">
+        <h2 id="export-modal-title">Export</h2>
+        <p class="storage-note">Your data is stored locally in this browser. Export a backup to keep it safe.</p>
+        <div>
+          <label><input type="radio" name="export-what" value="current" checked> Current Setlist</label>
+          <label><input type="radio" name="export-what" value="all-setlists"> All Setlists</label>
+          <label><input type="radio" name="export-what" value="songs"> Songs only (JSON)</label>
+          <label><input type="radio" name="export-what" value="everything"> Everything</label>
+        </div>
+        <div id="export-format-row">
+          <strong>Format:</strong>
+          <span id="export-format-options">
+            <label><input type="radio" name="export-format" value="json" checked> JSON</label>
+            <label><input type="radio" name="export-format" value="txt"> TXT</label>
+            <label><input type="radio" name="export-format" value="csv"> CSV</label>
+          </span>
+        </div>
+        <div class="backup-reminder-row">
+          <label><input type="checkbox" id="backup-reminder-toggle"> Remind me to back up every</label>
+          <select id="backup-reminder-days">
+            <option value="7">7 days</option>
+            <option value="30" selected>30 days</option>
+            <option value="90">90 days</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button id="export-download-btn" class="btn primary">Download</button>
+          <button id="export-cancel-btn" class="btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Import Modal -->
+    <div id="import-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="import-modal-title">
+      <div class="modal-content">
+        <h2 id="import-modal-title">Import</h2>
+        <div>
+          <label><input type="radio" name="import-type" value="songs" checked> Import Songs</label>
+          <label><input type="radio" name="import-type" value="setlist"> Import Setlist</label>
+          <label><input type="radio" name="import-type" value="restore"> Restore (JSON backup)</label>
+        </div>
+        <div id="import-options">
+          <label id="songs-dup-label">Duplicates: 
+            <select id="songs-dup-mode">
+              <option value="skip" selected>Skip duplicates by title</option>
+              <option value="copy">Create copies</option>
+            </select>
+          </label>
+        </div>
+        <input type="file" id="import-file-input" multiple>
+        <div class="modal-actions">
+          <button id="import-run-btn" class="btn primary">Import</button>
+          <button id="import-cancel-btn" class="btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+    </div>
+    <script src="script.js" defer></script>
+</body>
+</html>

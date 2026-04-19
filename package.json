@@ -1,0 +1,23 @@
+{
+  "name": "songbinder",
+  "version": "1.0.0",
+  "description": "A **modern, touch-friendly app** for musicians to manage setlists and lyrics with zero clutter and maximum clarity. Built for band rehearsals, gigging, and performance mode.",
+  "main": "script.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "lint": "eslint . --ext .js --ignore-pattern lib --ignore-pattern ./lib --ignore-pattern **/lib/**",
+    "format": "prettier -w \"**/*.{js,css,html,json,md}\"",
+    "test": "echo 'No tests yet'"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.29.1",
+    "prettier": "^3.3.3"
+  }
+}

@@ -1,0 +1,507 @@
+const SCHEMA_VERSION = 1;
+// Enhanced song data structure with metadata
+const defaultSections = "[Intro]\n\n[Verse 1]\n\n[Pre-Chorus]\n\n[Chorus]\n\n[Verse 2]\n\n[Bridge]\n\n[Outro]";
+
+const normalizeSectionLabels = (text = '') => {
+    const sectionKeywords = [
+        'intro',
+        'verse',
+        'prechorus',
+        'chorus',
+        'bridge',
+        'outro',
+        'hook',
+        'refrain',
+        'coda',
+        'solo',
+        'interlude',
+        'ending',
+        'breakdown',
+        'tag'
+    ];
+    return text.split(/\r?\n/).map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return line;
+        const match = trimmed.match(/^[\*\s\-_=~`]*[\(\[\{]?\s*([^\]\)\}]+?)\s*[\)\]\}]?[\*\s\-_=~`]*:?$/);
+        if (match) {
+            const label = match[1].trim();
+            const normalized = label.toLowerCase().replace(/[^a-z]/g, '');
+            if (sectionKeywords.some(k => normalized.startsWith(k))) {
+                const formatted = label
+                    .replace(/\s+/g, ' ')
+                    .replace(/(^|\s)\S/g, c => c.toUpperCase());
+                return `[${formatted}]`;
+            }
+        }
+        return line;
+    }).join('\n');
+};
+
+const cleanAIOutput = (text) => {
+    return text
+        .replace(/\r\n/g, '\n')
+        .replace(/<\/?(think|reasoning|analysis)>[\s\S]*?<\/(think|reasoning|analysis)>/gim, '')
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/(^|\n)\s*(analysis|reasoning|thoughts?|notes?|explanation)\s*:\s*[\s\S]*?(\n\s*\n|$)/gim, '$3')
+        .replace(/^\s*(Sure,|Here(?:'|)s|Of course,|Absolutely,|Let(?:'|)s)\b.*?\n+/gim, '')
+        .replace(/^#+\s*/gm, '')
+        .replace(/^(Capo|Key|Tempo|Time Signature).*$/gmi, '')
+        .replace(/[ \t]+$/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/^\s+|\s+$/g, '')
+        .replace(/^(Verse|Chorus|Bridge|Outro)[^\n]*$/gmi, '[$1]')
+        .trim();
+};
+
+const enforceAlternating = (lines) => {
+    const chords = [];
+    const lyrics = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (i % 2 === 0) {
+            chords.push(lines[i] || '');
+        } else {
+            lyrics.push(lines[i] || '');
+        }
+    }
+    return { chords, lyrics };
+};
+
+const createSong = (title, lyrics = '', chords = '') => ({
+    _v: SCHEMA_VERSION,
+    id: Date.now().toString(),
+    title,
+    lyrics: lyrics.trim() ? normalizeSectionLabels(cleanAIOutput(lyrics)) : defaultSections,
+    chords: cleanAIOutput(chords),
+    // New metadata fields
+    key: '',
+    tempo: 120,
+    timeSignature: '4/4',
+    notes: '', // Footer notes
+    createdAt: new Date().toISOString(),
+    lastEditedAt: new Date().toISOString(),
+    tags: []
+});
+
+// Enhanced clipboard functionality for mobile
+class ClipboardManager {
+    static async copyToClipboard(text, showToast = true) {
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                // Fallback for mobile/older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                textArea.style.top = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                document.execCommand('copy');
+                textArea.remove();
+            }
+            
+            if (showToast) {
+                this.showToast('Copied to clipboard!', 'success');
+            }
+            return true;
+        } catch (err) {
+            console.error('Failed to copy:', err);
+            if (showToast) {
+                this.showToast('Failed to copy to clipboard', 'error');
+            }
+            return false;
+        }
+    }
+
+    static showToast(message, type = 'info') {
+        // Remove existing toasts
+        document.querySelectorAll('.toast').forEach(toast => toast.remove());
+        
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        
+        // Trigger animation
+        setTimeout(() => toast.classList.add('show'), 10);
+        
+        // Remove after 3 seconds
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    static formatLyricsWithChords(lyrics, chords) {
+        const lyricLines = lyrics.split('\n');
+        const chordLines = chords.split('\n');
+        
+        return lyricLines.map((lyricLine, i) => {
+            const chordLine = chordLines[i] || '';
+            if (chordLine.trim()) {
+                return `${chordLine}\n${lyricLine}`;
+            }
+            return lyricLine;
+        }).join('\n');
+    }
+
+    static formatSongForExport(song, includeMetadata = true) {
+        let output = '';
+        
+        if (includeMetadata) {
+            output += `# ${song.title}\n\n`;
+            if (song.key) output += `**Key:** ${song.key}\n`;
+            if (song.tempo) output += `**Tempo:** ${song.tempo} BPM\n`;
+            if (song.timeSignature) output += `**Time Signature:** ${song.timeSignature}\n`;
+            if (song.tags.length > 0) output += `**Tags:** ${song.tags.join(', ')}\n`;
+            output += '\n---\n\n';
+        }
+        
+        // Add lyrics with chords
+        if (song.chords && song.chords.trim()) {
+            output += this.formatLyricsWithChords(song.lyrics, song.chords);
+        } else {
+            output += song.lyrics;
+        }
+        
+        if (song.notes && song.notes.trim()) {
+            output += '\n\n---\n**Notes:**\n' + song.notes;
+        }
+        
+        return output;
+    }
+}
+
+// Song metadata editor component
+const createMetadataEditor = (song) => `
+    <div class="metadata-editor">
+        <div class="metadata-row">
+            <label for="song-key">Key:</label>
+            <select id="song-key" value="${song.key || ''}">
+                <option value="">Select Key</option>
+                <option value="C">C</option>
+                <option value="C#">C#</option>
+                <option value="D">D</option>
+                <option value="D#">D#</option>
+                <option value="E">E</option>
+                <option value="F">F</option>
+                <option value="F#">F#</option>
+                <option value="G">G</option>
+                <option value="G#">G#</option>
+                <option value="A">A</option>
+                <option value="A#">A#</option>
+                <option value="B">B</option>
+            </select>
+        </div>
+        
+        <div class="metadata-row">
+            <label for="song-tempo">Tempo (BPM):</label>
+            <input type="number" id="song-tempo" value="${song.tempo || 120}" min="60" max="240">
+        </div>
+        
+        <div class="metadata-row">
+            <label for="song-time-signature">Time Signature:</label>
+            <select id="song-time-signature" value="${song.timeSignature || '4/4'}">
+                <option value="4/4">4/4</option>
+                <option value="3/4">3/4</option>
+                <option value="2/4">2/4</option>
+                <option value="6/8">6/8</option>
+                <option value="12/8">12/8</option>
+            </select>
+        </div>
+        
+        <div class="metadata-row">
+            <label for="song-notes">Notes:</label>
+            <textarea id="song-notes" placeholder="Performance notes, structure, etc.">${song.notes || ''}</textarea>
+        </div>
+        
+        <div class="metadata-row">
+            <label for="song-tags">Tags:</label>
+            <input type="text" id="song-tags" placeholder="rock, ballad, easy" value="${song.tags ? song.tags.join(', ') : ''}">
+            <small>Separate tags with commas</small>
+        </div>
+    </div>
+`;
+
+// Update song list item to show metadata
+const createSongListItem = (song) => {
+    const lastEdited = new Date(song.lastEditedAt).toLocaleDateString();
+    const metadata = [];
+    if (song.key) metadata.push(song.key);
+    if (song.tempo) metadata.push(`${song.tempo} BPM`);
+    if (song.timeSignature && song.timeSignature !== '4/4') metadata.push(song.timeSignature);
+    
+    return `
+        <div class="song-item" data-id="${song.id}">
+            <div class="song-info">
+                <span class="song-title">${song.title}</span>
+                ${metadata.length > 0 ? `<div class="song-metadata">${metadata.join(' • ')}</div>` : ''}
+                <div class="song-details">
+                    ${song.tags.length > 0 ? `<span class="song-tags">${song.tags.join(', ')}</span>` : ''}
+                    <span class="song-edited">Last edited: ${lastEdited}</span>
+                </div>
+            </div>
+            <div class="song-actions">
+                <button class="song-copy-btn icon-btn" title="Quick Copy">
+                    <i class="fas fa-copy"></i>
+                </button>
+                <a class="song-edit-btn edit-song-btn" href="./editor.html?songId=${song.id}" title="Edit">
+                    <i class="fas fa-pen"></i>
+                </a>
+                <button class="song-delete-btn danger delete-song-btn" title="Delete">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
+        </div>
+    `;
+};
+
+// Usage in editor.js for handling copy operations
+const handleCopyOperation = async (song, copyType) => {
+    let textToCopy = '';
+    
+    switch (copyType) {
+        case 'raw':
+            textToCopy = song.lyrics || '';
+            break;
+        case 'chords':
+            textToCopy = ClipboardManager.formatLyricsWithChords(song.lyrics, song.chords);
+            break;
+        case 'formatted':
+            textToCopy = ClipboardManager.formatSongForExport(song, true);
+            break;
+        case 'metadata':
+            textToCopy = `${song.title}\nKey: ${song.key || 'N/A'}\nTempo: ${song.tempo} BPM\nTime: ${song.timeSignature}\nTags: ${song.tags.join(', ')}`;
+            break;
+        default:
+            textToCopy = song.lyrics || '';
+    }
+    
+    return await ClipboardManager.copyToClipboard(textToCopy);
+};
+
+// Save song with updated metadata (persist to IndexedDB via EditorDB)
+const saveCurrentSongWithMetadata = async (song) => {
+    // Update metadata from form
+    song.key = document.getElementById('song-key')?.value || '';
+    song.tempo = parseInt(document.getElementById('song-tempo')?.value) || 120;
+    song.timeSignature = document.getElementById('song-time-signature')?.value || '4/4';
+    song.notes = document.getElementById('song-notes')?.value || '';
+    
+    // Parse tags
+    const tagsInput = document.getElementById('song-tags')?.value || '';
+    song.tags = tagsInput.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
+    
+    // Update timestamp
+    song.lastEditedAt = new Date().toISOString();
+
+    try {
+        // Persist single song; main app will ignore extra fields
+        await window.EditorDB?.putSong?.(song);
+    } catch (e) {
+        console.warn('Failed to persist song metadata to DB', e);
+    }
+
+    return song;
+};
+
+
+// Retained for compatibility in other flows (no-ops here)
+function safeLocalStorageSet(key, value) { try { localStorage.setItem(key, value); return true; } catch { return false; } }
+function safeLocalStorageGet(key, fallback='[]') { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }
+
+
+async function exportAllSongs(filename = 'lyricsmith_songs.json') {
+    // Export songs currently stored in IDB
+    let all = [];
+    try { all = await (window.EditorDB?.getAllSongs?.() || []); } catch {}
+    const blob = new Blob([JSON.stringify(all)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+async function exportAllSongsAsSeparateTxtZip(filename = 'lyricsmith_songs_txt.zip') {
+    let all = [];
+    try { all = await (window.EditorDB?.getAllSongs?.() || []); } catch {}
+    if (!all.length) {
+        try { ClipboardManager.showToast('No songs to export.', 'info'); } catch {}
+        return;
+    }
+    const sanitizeFilename = (name) => {
+        const base = String(name || 'Untitled')
+            .replace(/[\\/:*?"<>|]+/g, '')
+            .trim()
+            .replace(/\s+/g, '_');
+        return base.slice(0, 80) || 'song';
+    };
+    const ensureUnique = (base, used) => {
+        let name = base;
+        let n = 1;
+        while (used.has(name)) { n += 1; name = `${base}_${n}`; }
+        used.add(name);
+        return name;
+    };
+    const usedNames = new Set();
+    const encoder = new TextEncoder();
+    const files = all.map((song) => {
+        const title = song?.title || 'Untitled';
+        const base = sanitizeFilename(title);
+        const unique = ensureUnique(base, usedNames);
+        const content = ClipboardManager.formatSongForExport(song, true);
+        return { name: `${unique}.txt`, bytes: encoder.encode(content) };
+    });
+    const blob = buildZipFromFiles(files);
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// Minimal ZIP builder (store mode, no compression)
+function buildZipFromFiles(files) {
+    const makeUint8 = (len) => new Uint8Array(len);
+    const writeU16 = (arr, off, val) => { arr[off] = val & 0xff; arr[off + 1] = (val >>> 8) & 0xff; };
+    const writeU32 = (arr, off, val) => {
+        arr[off] = val & 0xff;
+        arr[off + 1] = (val >>> 8) & 0xff;
+        arr[off + 2] = (val >>> 16) & 0xff;
+        arr[off + 3] = (val >>> 24) & 0xff;
+    };
+    const dosDateTime = (d) => {
+        const year = d.getFullYear();
+        const month = d.getMonth() + 1;
+        const day = d.getDate();
+        const hours = d.getHours();
+        const minutes = d.getMinutes();
+        const seconds = Math.floor(d.getSeconds() / 2);
+        const dt = ((year - 1980) << 9) | (month << 5) | day;
+        const tm = (hours << 11) | (minutes << 5) | seconds;
+        return { dt, tm };
+    };
+    const crcTable = (() => {
+        const table = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+            let c = n;
+            for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+            table[n] = c >>> 0;
+        }
+        return table;
+    })();
+    const crc32 = (bytes) => {
+        let c = 0xffffffff;
+        for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+        return (c ^ 0xffffffff) >>> 0;
+    };
+
+    const parts = [];
+    const central = [];
+    let offset = 0;
+    const now = new Date();
+    const { dt, tm } = dosDateTime(now);
+    for (const f of files) {
+        const nameBytes = new TextEncoder().encode(f.name);
+        const data = f.bytes instanceof Uint8Array ? f.bytes : new Uint8Array(f.bytes);
+        const crc = crc32(data);
+        const lf = makeUint8(30 + nameBytes.length);
+        writeU32(lf, 0, 0x04034b50);
+        writeU16(lf, 4, 20);
+        writeU16(lf, 6, 0);
+        writeU16(lf, 8, 0);
+        writeU16(lf, 10, tm);
+        writeU16(lf, 12, dt);
+        writeU32(lf, 14, crc);
+        writeU32(lf, 18, data.length);
+        writeU32(lf, 22, data.length);
+        writeU16(lf, 26, nameBytes.length);
+        writeU16(lf, 28, 0);
+        lf.set(nameBytes, 30);
+        parts.push(lf, data);
+        const localOffset = offset;
+        offset += lf.length + data.length;
+        const cf = makeUint8(46 + nameBytes.length);
+        writeU32(cf, 0, 0x02014b50);
+        writeU16(cf, 4, 20);
+        writeU16(cf, 6, 20);
+        writeU16(cf, 8, 0);
+        writeU16(cf, 10, 0);
+        writeU16(cf, 12, tm);
+        writeU16(cf, 14, dt);
+        writeU32(cf, 16, crc);
+        writeU32(cf, 20, data.length);
+        writeU32(cf, 24, data.length);
+        writeU16(cf, 28, nameBytes.length);
+        writeU16(cf, 30, 0);
+        writeU16(cf, 32, 0);
+        writeU16(cf, 34, 0);
+        writeU16(cf, 36, 0);
+        writeU32(cf, 38, 0);
+        writeU32(cf, 42, localOffset);
+        cf.set(nameBytes, 46);
+        central.push(cf);
+    }
+    const centralStart = offset;
+    for (const c of central) { parts.push(c); offset += c.length; }
+    const centralSize = offset - centralStart;
+    const eocd = makeUint8(22);
+    writeU32(eocd, 0, 0x06054b50);
+    writeU16(eocd, 4, 0);
+    writeU16(eocd, 6, 0);
+    writeU16(eocd, 8, files.length);
+    writeU16(eocd, 10, files.length);
+    writeU32(eocd, 12, centralSize);
+    writeU32(eocd, 16, centralStart);
+    writeU16(eocd, 20, 0);
+    parts.push(eocd);
+    return new Blob(parts, { type: 'application/zip' });
+}
+
+
+async function importSongs(file) {
+    try {
+        const text = await file.text();
+        let parsed = JSON.parse(text);
+        // Accept either an array of songs or { songs: [...] }
+        let incoming = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.songs) ? parsed.songs : []);
+        if (!Array.isArray(incoming)) throw new Error('Invalid format');
+        const existing = await (window.EditorDB?.getAllSongs?.() || []);
+        const byId = new Map(existing.map(s => [s.id, s]));
+        const norm = (t)=> String(t||'').trim().toLowerCase();
+        const existingTitles = new Set(existing.map(s=> norm(s.title)));
+        const dupCount = incoming.reduce((n, s) => n + (existingTitles.has(norm(s?.title)) ? 1 : 0), 0);
+        let skipDup = false;
+        if (dupCount > 0) {
+            skipDup = confirm(`${dupCount} duplicate title(s) detected. Click OK to skip duplicates, or Cancel to import copies.`);
+        }
+        const ensureUniqueTitle = (title)=>{
+            let base = String(title||'Untitled');
+            if (skipDup) return base; // Won't be used for duplicates
+            let cand = base, n = 1;
+            while (existingTitles.has(norm(cand))) { n++; cand = `${base} (Copy ${n})`; }
+            existingTitles.add(norm(cand));
+            return cand;
+        };
+        for (const s of incoming) {
+            if (!s) continue;
+            if (skipDup && existingTitles.has(norm(s.title))) continue;
+            const id = s.id || Date.now().toString() + Math.random().toString(36).slice(2, 11);
+            const song = { ...byId.get(id), ...s, id };
+            if (!skipDup) song.title = ensureUniqueTitle(song.title);
+            byId.set(id, song);
+        }
+        const merged = Array.from(byId.values());
+        try { await window.EditorDB?.putSongs?.(merged); } catch (e) { throw e; }
+        try { window.StorageSafe?.snapshotLater?.('editor:import'); } catch {}
+        return merged;
+    } catch (e) {
+        console.error('importSongs failed', e);
+        throw e;
+    }
+}
