@@ -270,13 +270,18 @@
         user_id: String(userId),
         setlist_id: String(setlistId),
         song_id: String(songId),
-        position: index,
+        position: index + 1,
       }));
       logSyncPayload('setlist_songs replace', {
         setlist_id: setlistId,
         user_id: userId,
         orderedSongIds,
       }, rows);
+      console.info('[SongSync] setlist_songs replace preview', rows.slice(0, 5).map((row) => ({
+        setlist_id: row.setlist_id,
+        song_id: row.song_id,
+        position: row.position,
+      })));
 
       const { error: insertError } = await supabaseClient
         .from('setlist_songs')
