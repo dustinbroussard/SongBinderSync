@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://openrouter.ai https://tessdata.projectnaptha.com; worker-src 'self' blob:; object-src 'none'; base-uri 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://openrouter.ai https://tessdata.projectnaptha.com https://*.supabase.co https://*.supabase.in https://*.supabase.net; worker-src 'self' blob:; object-src 'none'; base-uri 'none'">
     <title>SongBinder</title>
     <link rel="stylesheet" href="style.css">
     <link rel="manifest" href="manifest.json">
@@ -18,12 +18,36 @@
     <script src="lib/idb.min.js" defer></script>
     <script src="lib/mammoth.browser.min.js" defer></script>
     <script src="lib/tesseract/tesseract.min.js" defer></script>
+    <script src="env.js" defer></script>
+    <script src="lib/supabase.js" defer></script>
+    <script src="supabase-client.js" defer></script>
 </head>
 <body>
 <a href="#app" class="skip-link">Skip to content</a>
-<div class="main-box">
+<section id="landing-screen" class="landing-screen" aria-labelledby="landing-title">
+    <div class="landing-card">
+        <div class="landing-brand">
+            <img src="assets/images/logo-dark.png" alt="SongBinder logo" class="landing-logo" loading="eager" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
+            <p class="landing-eyebrow">SongBinder</p>
+        </div>
+        <h1 id="landing-title">Keep your songs organized and ready on any stage.</h1>
+        <p class="landing-copy">Build setlists, edit lyrics, and run performance mode from one clean library. Sign in to sync your access with Supabase Auth, or keep working locally on this device.</p>
+        <div class="landing-actions">
+            <button id="google-signin-btn" class="btn primary landing-google-btn" type="button">
+                <i class="fab fa-google" aria-hidden="true"></i>
+                <span>Sign in with Google</span>
+            </button>
+            <button id="continue-offline-btn" class="btn landing-secondary-btn" type="button">
+                Continue offline
+            </button>
+        </div>
+        <p id="auth-feedback" class="landing-feedback" role="status" aria-live="polite">Your songs and setlists stay stored in this browser unless you choose to sign in.</p>
+    </div>
+</section>
+<div id="app-shell" class="main-box" hidden>
  <header class="app-header">
   <div class="header-top">
+    <div id="auth-session-pill" class="auth-session-pill" hidden></div>
     <div class="app-logo">
   <img src="assets/images/logo-dark.png" alt="App Logo" class="app-logo-img main-logo-img" loading="lazy" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
 </div>
@@ -139,6 +163,7 @@
           <label><input type="radio" name="import-type" value="songs" checked> Import Songs</label>
           <label><input type="radio" name="import-type" value="setlist"> Import Setlist</label>
           <label><input type="radio" name="import-type" value="restore"> Restore (JSON backup)</label>
+          <label><input type="radio" name="import-type" value="legacy-supabase"> Legacy Backup to Supabase</label>
         </div>
         <div id="import-options">
           <label id="songs-dup-label">Duplicates: 
@@ -147,6 +172,7 @@
               <option value="copy">Create copies</option>
             </select>
           </label>
+          <p id="legacy-import-note" class="storage-note" hidden>Upload a legacy backup JSON file with a top-level <code>songs</code> array. Imported songs are saved to your signed-in Supabase account.</p>
         </div>
         <input type="file" id="import-file-input" multiple>
         <div class="modal-actions">

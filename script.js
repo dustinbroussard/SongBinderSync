@@ -1,4 +1,4 @@
-/* global idb, Fuse, Sortable, mammoth */
+/* global idb, Fuse, Sortable, mammoth, SongBinderSupabase */
 // ==== THEME HANDLING ====
 function updateLogoForTheme(theme) {
     const nextSrc = theme === 'light' ? 'logoLight' : 'logoDark';
@@ -131,6 +131,219 @@ function safeParseFromStorage(key, fallback) {
     return { value: fallback, valid: false, raw };
   }
 }
+
+const AuthGate = (() => {
+  const ACCESS_MODE_KEY = 'songbinderAccessMode';
+  let client = null;
+  let appRef = null;
+  let started = false;
+  let currentSession = null;
+
+  const ui = {
+    landing: () => document.getElementById('landing-screen'),
+    appShell: () => document.getElementById('app-shell'),
+    signInBtn: () => document.getElementById('google-signin-btn'),
+    offlineBtn: () => document.getElementById('continue-offline-btn'),
+    feedback: () => document.getElementById('auth-feedback'),
+    sessionPill: () => document.getElementById('auth-session-pill'),
+  };
+
+  function isSupabaseConfigured() {
+    return !!window.SongBinderSupabase?.isConfigured?.();
+  }
+
+  function getRedirectUrl() {
+    return window.SongBinderSupabase?.getRedirectUrl?.() || window.location.href;
+  }
+
+  function getStoredMode() {
+    try {
+      return localStorage.getItem(ACCESS_MODE_KEY) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function setStoredMode(mode) {
+    try {
+      if (mode) localStorage.setItem(ACCESS_MODE_KEY, mode);
+      else localStorage.removeItem(ACCESS_MODE_KEY);
+    } catch {}
+  }
+
+  function setFeedback(message, type = 'info') {
+    const feedback = ui.feedback();
+    if (!feedback) return;
+    feedback.textContent = message;
+    feedback.dataset.state = type;
+  }
+
+  function setSession(session) {
+    currentSession = session || null;
+  }
+
+  function setLoading(isLoading) {
+    const signInBtn = ui.signInBtn();
+    const offlineBtn = ui.offlineBtn();
+    if (signInBtn) signInBtn.disabled = !!isLoading;
+    if (offlineBtn) offlineBtn.disabled = !!isLoading;
+  }
+
+  function updateSessionPill(mode, session) {
+    const pill = ui.sessionPill();
+    if (!pill) return;
+    if (mode !== 'authenticated' || !session?.user) {
+      pill.hidden = true;
+      pill.innerHTML = '';
+      return;
+    }
+    const label = escapeHTML(session.user.email || 'Signed in');
+    pill.innerHTML = `
+      <span class="auth-session-label">${label}</span>
+      <button type="button" class="btn auth-signout-btn">Sign out</button>
+    `;
+    pill.hidden = false;
+    pill.querySelector('.auth-signout-btn')?.addEventListener('click', async () => {
+      if (!client) return;
+      setLoading(true);
+      try {
+        await client.auth.signOut();
+        setSession(null);
+        setStoredMode('');
+        window.location.reload();
+      } catch (err) {
+        console.error('Sign out failed', err);
+        setFeedback('Unable to sign out right now.', 'error');
+      } finally {
+        setLoading(false);
+      }
+    });
+  }
+
+  async function startApp(mode, session = null) {
+    setSession(session);
+    if (started) {
+      updateSessionPill(mode, session);
+      return;
+    }
+    started = true;
+    updateSessionPill(mode, session);
+    const landing = ui.landing();
+    const shell = ui.appShell();
+    if (landing) landing.hidden = true;
+    if (shell) shell.hidden = false;
+    if (appRef && typeof appRef.init === 'function') {
+      await appRef.init();
+    }
+  }
+
+  function showLanding(message, type = 'info') {
+    const landing = ui.landing();
+    const shell = ui.appShell();
+    if (shell) shell.hidden = true;
+    if (landing) landing.hidden = false;
+    setFeedback(message, type);
+    updateSessionPill('', null);
+  }
+
+  function ensureClient() {
+    if (client || !isSupabaseConfigured()) return client;
+    client = window.SongBinderSupabase?.getClient?.() || null;
+    return client;
+  }
+
+  async function continueOffline() {
+    setStoredMode('offline');
+    await startApp('offline');
+  }
+
+  async function signInWithGoogle() {
+    const supabaseClient = ensureClient();
+    if (!supabaseClient) {
+      setFeedback('Google sign-in is not configured yet. Generate env.js from SUPABASE_URL and SUPABASE_ANON_KEY.', 'error');
+      return;
+    }
+    setLoading(true);
+    setFeedback('Redirecting to Google sign-in…');
+    try {
+      const { error } = await supabaseClient.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: getRedirectUrl(),
+        },
+      });
+      if (error) throw error;
+    } catch (err) {
+      console.error('Google sign-in failed', err);
+      setFeedback('Unable to start Google sign-in. Check your Supabase config and redirect URL.', 'error');
+      setLoading(false);
+    }
+  }
+
+  async function bootstrap(app) {
+    appRef = app;
+    ui.signInBtn()?.addEventListener('click', () => {
+      signInWithGoogle();
+    });
+    ui.offlineBtn()?.addEventListener('click', () => {
+      continueOffline();
+    });
+
+    if (!isSupabaseConfigured()) {
+      ui.signInBtn()?.setAttribute('disabled', 'disabled');
+      if (getStoredMode() === 'offline') {
+        await startApp('offline');
+        return;
+      }
+      showLanding('Google sign-in is available once env.js is generated from SUPABASE_URL and SUPABASE_ANON_KEY.');
+      return;
+    }
+
+    const supabaseClient = ensureClient();
+    supabaseClient.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) {
+        setStoredMode('authenticated');
+        startApp('authenticated', session);
+        return;
+      }
+      if (getStoredMode() === 'offline') {
+        startApp('offline');
+        return;
+      }
+      showLanding('Sign in with Google or continue offline on this device.');
+    });
+
+    try {
+      const { data, error } = await supabaseClient.auth.getSession();
+      if (error) throw error;
+      if (data?.session) {
+        setSession(data.session);
+        setStoredMode('authenticated');
+        await startApp('authenticated', data.session);
+        return;
+      }
+    } catch (err) {
+      console.error('Session bootstrap failed', err);
+      showLanding('Sign-in is unavailable right now. You can still continue offline.', 'error');
+      return;
+    }
+
+    if (getStoredMode() === 'offline') {
+      await startApp('offline');
+      return;
+    }
+
+    showLanding('Sign in with Google or continue offline on this device.');
+  }
+
+  return {
+    bootstrap,
+    getSession: () => currentSession,
+    getUser: () => currentSession?.user || null,
+    isAuthenticated: () => !!currentSession?.user,
+  };
+})();
 
 // ==== DB MODULE (IndexedDB via idb) ====
 /* global idb */
@@ -787,6 +1000,7 @@ document.addEventListener('DOMContentLoaded', () => {
                       <input type="checkbox" id="song-fav-filter" ${localStorage.getItem('songsFavoritesOnly')==='1' ? 'checked' : ''} aria-label="Show favorites only">
                       <span><i class="fas fa-star"></i></span>
                     </label>
+                    <button id="legacy-import-btn" class="btn" title="Import legacy backup to Supabase"><i class="fas fa-file-import"></i></button>
                     <label for="song-upload-input" class="btn" title="Upload"><i class="fas fa-upload"></i></label>
                     <button id="delete-all-songs-btn" class="btn danger" title="Delete All"><i class="fas fa-trash"></i></button>
                     <button id="add-song-btn" class="btn" title="Add Song"><i class="fas fa-plus"></i></button>
@@ -877,6 +1091,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         this.renderSongs();
                     });
                 }
+                document.getElementById('legacy-import-btn')?.addEventListener('click', () => this.openImportModal('legacy-supabase'));
                 this.addSongBtn.addEventListener('click', () => this.openSongModal());
                 this.deleteAllSongsBtn.addEventListener('click', () => {
                     confirmDialog('Delete ALL songs? This cannot be undone!', async () => {
@@ -906,8 +1121,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.duplicateSetlistBtn.addEventListener('click', () => this.handleDuplicateSetlist());
                 this.deleteSetlistBtn.addEventListener('click', () => this.handleDeleteSetlist());
                 document.getElementById('import-setlist-btn').addEventListener('click', () => {
-                    const m = document.getElementById('import-modal');
-                    if (m) m.style.display = 'flex';
+                    this.openImportModal('setlist');
                 });
                 // OCR image import triggers hidden input
                 document.getElementById('import-setlist-image-btn')?.addEventListener('click', () => {
@@ -1664,6 +1878,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return JSON.stringify(data, null, 2);
         },
 
+        openImportModal(type = 'songs') {
+            const modal = document.getElementById('import-modal');
+            if (!modal) return;
+            const radio = document.querySelector(`input[name="import-type"][value="${type}"]`);
+            if (radio) radio.checked = true;
+            this.updateImportOptionsVisibility();
+            modal.style.display = 'flex';
+        },
+
         // Export songs as separate .txt files (bundled into a ZIP)
         exportSongsAsSeparateTxt() {
             const sanitizeFilename = (name) => {
@@ -1891,7 +2114,20 @@ document.addEventListener('DOMContentLoaded', () => {
         updateImportOptionsVisibility() {
             const type = (document.querySelector('input[name="import-type"]:checked')?.value)||'songs';
             const dup = document.getElementById('songs-dup-label');
+            const legacyNote = document.getElementById('legacy-import-note');
+            const filesInput = document.getElementById('import-file-input');
             if (dup) dup.style.display = type === 'songs' ? 'block' : 'none';
+            if (legacyNote) legacyNote.hidden = type !== 'legacy-supabase';
+            if (filesInput) {
+                filesInput.multiple = type === 'songs' || type === 'setlist';
+                if (type === 'legacy-supabase' || type === 'restore') {
+                    filesInput.accept = '.json,application/json';
+                } else if (type === 'setlist') {
+                    filesInput.accept = '.txt,.docx,.json';
+                } else {
+                    filesInput.accept = '.txt,.docx,.json,.csv';
+                }
+            }
         },
 
         async handleImportRun() {
@@ -1910,6 +2146,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         this.currentSetlistId = result.setlist.id;
                         this.renderSetlists();
                     }
+                } else if (type === 'legacy-supabase') {
+                    const result = await this.importLegacyBackupToSupabase(files[0]);
+                    showToast(result.message, result.imported ? 'success' : 'info', 4500);
                 } else {
                     const before = this.songs.length;
                     const result = await this.restoreFromJSON(files[0]);
@@ -1925,7 +2164,99 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 const m = document.getElementById('import-modal'); if (m) m.style.display='none';
                 filesInput.value = '';
-            } catch (e) { console.error(e); showToast('Import failed.', 'error'); }
+            } catch (e) {
+                console.error(e);
+                showToast(e?.message || 'Import failed.', 'error');
+            }
+        },
+
+        async importLegacyBackupToSupabase(file) {
+            const supabaseClient = window.SongBinderSupabase?.getClient?.();
+            const user = AuthGate.getUser();
+
+            if (!supabaseClient || !user) {
+                throw new Error('Sign in with Google before importing to Supabase.');
+            }
+
+            const text = await file.text();
+            let parsed;
+            try {
+                parsed = JSON.parse(text);
+            } catch {
+                throw new Error('That file is not valid JSON.');
+            }
+
+            if (!parsed || !Array.isArray(parsed.songs)) {
+                throw new Error('Legacy backup must contain a top-level songs array.');
+            }
+
+            const normalizedSongs = parsed.songs
+                .filter((song) => song && typeof song === 'object')
+                .map((song) => ({
+                    id: String(song.id || '').trim(),
+                    title: normalizeSongTitleValue(song.title || ''),
+                    lyrics: normalizeLyricsBlock(song.title || '', song.lyrics || ''),
+                }))
+                .filter((song) => song.id && song.title);
+
+            if (!normalizedSongs.length) {
+                throw new Error('No valid songs were found in that backup file.');
+            }
+
+            const { data: existingSongs, error: existingError } = await supabaseClient
+                .from('songs')
+                .select('id,title,lyrics')
+                .eq('user_id', user.id);
+
+            if (existingError) throw existingError;
+
+            const existingIds = new Set((existingSongs || []).map((song) => String(song.id || '').trim()).filter(Boolean));
+            const existingContent = new Set(
+                (existingSongs || []).map((song) => `${String(song.title || '').trim().toLowerCase()}::${String(song.lyrics || '').trim()}`)
+            );
+            const seenImportIds = new Set();
+            const seenImportContent = new Set();
+            const rowsToInsert = [];
+            let skipped = 0;
+
+            for (const song of normalizedSongs) {
+                const contentKey = `${song.title.trim().toLowerCase()}::${song.lyrics.trim()}`;
+                if (
+                    existingIds.has(song.id) ||
+                    existingContent.has(contentKey) ||
+                    seenImportIds.has(song.id) ||
+                    seenImportContent.has(contentKey)
+                ) {
+                    skipped += 1;
+                    continue;
+                }
+                seenImportIds.add(song.id);
+                seenImportContent.add(contentKey);
+                rowsToInsert.push({
+                    id: song.id,
+                    user_id: user.id,
+                    title: song.title,
+                    lyrics: song.lyrics,
+                });
+            }
+
+            if (!rowsToInsert.length) {
+                return {
+                    imported: 0,
+                    skipped,
+                    message: 'No new songs to import. That backup already appears to be in Supabase.',
+                };
+            }
+
+            const { error: insertError } = await supabaseClient.from('songs').insert(rowsToInsert);
+            if (insertError) throw insertError;
+
+            const imported = rowsToInsert.length;
+            const message = skipped
+                ? `Imported ${imported} song(s) to Supabase. Skipped ${skipped} duplicate song(s).`
+                : `Imported ${imported} song(s) to Supabase.`;
+
+            return { imported, skipped, message };
         },
 
         async importSongs(fileList, dupMode) {
@@ -2720,7 +3051,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    app.init();
+    AuthGate.bootstrap(app).catch((err) => {
+        console.error('App bootstrap failed', err);
+        showToast('Unable to start SongBinder.', 'error', 4000);
+    });
 
     function finishImportSetlist(name, text) {
         const result = SetlistsManager.importSetlistFromText(name, text, app.songs);

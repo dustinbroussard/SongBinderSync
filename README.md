@@ -6,6 +6,17 @@ SongBinder is a local-first progressive web application for musicians who need a
 2. **Full-screen performance application** for live playback, autoscroll, and stage navigation.
 3. **Dedicated editor application** for structured lyric authoring, chords, metadata, and AI-assisted editing.
 
+## Local Auth Setup
+
+Supabase Auth is optional and currently limited to sign-in state plus explicit user-triggered flows. The app remains local-first: songs and setlists still live in IndexedDB, and there is no full sync implementation yet.
+
+1. Copy `.env.example` to `.env` or `.env.local`.
+2. Set `SUPABASE_URL` and `SUPABASE_ANON_KEY`.
+3. Run `npm run env:write` to generate `env.js`.
+4. Serve the project and use the landing screen to either sign in with Google or continue offline.
+
+`env.js` is gitignored and must be generated locally for auth-enabled runs.
+
 ---
 
 ## 1. System Architecture

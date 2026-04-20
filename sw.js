@@ -1,4 +1,4 @@
-const CACHE_NAME = 'songbinder-manager-v11';
+const CACHE_NAME = 'songbinder-manager-v12';
 const ABSOLUTE_URL = /^https?:\/\//i;
 const BASE_PATH = (() => {
   try {
@@ -36,7 +36,11 @@ const rawCachePaths = [
     '/index.html',
     '/style.css',
     '/script.js',
+    '/env.js',
+    '/config.js',
     '/manifest.json',
+    '/lib/supabase.js',
+    '/supabase-client.js',
     '/performance/performance.html',
     '/performance/performance.js',
     '/performance/performance.css',

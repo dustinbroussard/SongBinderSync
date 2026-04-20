@@ -7,6 +7,7 @@
     "lib": "lib"
   },
   "scripts": {
+    "env:write": "node scripts/write-env.mjs",
     "lint": "eslint . --ext .js --ignore-pattern lib --ignore-pattern ./lib --ignore-pattern **/lib/**",
     "format": "prettier -w \"**/*.{js,css,html,json,md}\"",
     "test": "echo 'No tests yet'"
@@ -19,5 +20,8 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.29.1",
     "prettier": "^3.3.3"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.103.3"
   }
 }

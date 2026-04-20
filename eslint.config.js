@@ -27,8 +27,20 @@ module.exports = [
       },
     },
   },
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
   js.configs.recommended,
   {
+    files: ['**/*.js'],
     plugins: { import: importPlugin },
     languageOptions: {
       ecmaVersion: 2021,
