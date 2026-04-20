@@ -44,29 +44,22 @@
     return session?.user || null;
   }
 
+  function logSyncPayload(label, rawPayload, filteredPayload) {
+    console.info(`[SongSync] ${label} raw payload`, rawPayload);
+    console.info(`[SongSync] ${label} filtered payload`, filteredPayload);
+    console.info(`[SongSync] ${label} final payload being sent`, filteredPayload);
+  }
+
+  function logSyncError(label, error) {
+    console.error(`[SongSync] ${label} Supabase error`, error);
+  }
+
   function buildSongBaseRow(song, userId) {
     return {
       id: String(song?.id || '').trim(),
       user_id: String(userId || '').trim(),
       title: String(song?.title || '').trim(),
       lyrics: String(song?.lyrics || ''),
-    };
-  }
-
-  function buildSongTimestampRow(song, userId) {
-    const baseRow = buildSongBaseRow(song, userId);
-    const createdAt = song?.createdAt || song?.created_at || null;
-    const updatedAt =
-      song?.lastEditedAt ||
-      song?.updatedAt ||
-      song?.updated_at ||
-      createdAt ||
-      new Date().toISOString();
-
-    return {
-      ...baseRow,
-      created_at: createdAt || updatedAt,
-      updated_at: updatedAt,
     };
   }
 
@@ -88,13 +81,23 @@
   async function upsertProfile(user) {
     const supabaseClient = getClient();
     if (!supabaseClient || !user?.id) return { skipped: true };
+    const rawPayload = {
+      id: user.id,
+      email: user.email || null,
+    };
+    const filteredPayload = {
+      id: String(user.id).trim(),
+    };
+
+    logSyncPayload('Profile upsert', rawPayload, filteredPayload);
+
     const { error } = await supabaseClient
       .from('profiles')
-      .upsert({
-        id: user.id,
-        email: user.email || null,
-      }, { onConflict: 'id' });
-    if (error) throw error;
+      .upsert(filteredPayload, { onConflict: 'id' });
+    if (error) {
+      logSyncError('Profile upsert', error);
+      throw error;
+    }
     return { skipped: false };
   }
 
@@ -173,16 +176,32 @@
     if (!song?.id) throw new Error('Song is missing an id.');
     if (!userId) throw new Error('User id is required for song upsert.');
 
-    let result = await supabaseClient
-      .from('songs')
-      .upsert(buildSongTimestampRow(song, userId), { onConflict: 'id' });
+    const rawPayload = {
+      id: song?.id,
+      user_id: userId,
+      title: song?.title,
+      lyrics: song?.lyrics,
+      created_at: song?.createdAt || song?.created_at || null,
+      updated_at: song?.lastEditedAt || song?.updatedAt || song?.updated_at || null,
+      createdAt: song?.createdAt,
+      updatedAt: song?.updatedAt,
+      lastEditedAt: song?.lastEditedAt,
+      favorite: song?.favorite,
+      chords: song?.chords,
+      notes: song?.notes,
+      tags: song?.tags,
+    };
+    const filteredPayload = buildSongBaseRow(song, userId);
 
-    if (result.error && isMissingColumnError(result.error)) {
-      result = await supabaseClient
-        .from('songs')
-        .upsert(buildSongBaseRow(song, userId), { onConflict: 'id' });
+    logSyncPayload('Song upsert', rawPayload, filteredPayload);
+
+    const result = await supabaseClient
+      .from('songs')
+      .upsert(filteredPayload, { onConflict: 'id' });
+    if (result.error) {
+      logSyncError('Song upsert', result.error);
+      throw result.error;
     }
-    if (result.error) throw result.error;
     return result.data || null;
   }
 
