@@ -47,10 +47,12 @@
 <div id="app-shell" class="main-box" hidden>
  <header class="app-header">
   <div class="header-top">
-    <div id="auth-session-pill" class="auth-session-pill" hidden></div>
-    <div class="app-logo">
-  <img src="assets/images/logo-dark.png" alt="App Logo" class="app-logo-img main-logo-img" loading="lazy" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
-</div>
+    <div class="header-brand">
+      <div class="app-logo">
+        <img src="assets/images/logo-dark.png" alt="App Logo" class="app-logo-img main-logo-img" loading="lazy" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
+      </div>
+      <div id="auth-session-pill" class="auth-session-pill" hidden></div>
+    </div>
   <button id="theme-toggle-btn" class="icon-btn theme-toggle-btn" title="Toggle Light/Dark">
   <i class="fas fa-adjust"></i>
 </button>
@@ -148,8 +150,10 @@
             <option value="90">90 days</option>
           </select>
         </div>
+        <p id="export-cloud-note" class="storage-note">Sign in to push your local songs and setlists to the cloud.</p>
         <div class="modal-actions">
           <button id="export-download-btn" class="btn primary">Download</button>
+          <button id="export-cloud-btn" class="btn" type="button">Push to Cloud</button>
           <button id="export-cancel-btn" class="btn">Cancel</button>
         </div>
       </div>
@@ -175,8 +179,10 @@
           <p id="legacy-import-note" class="storage-note" hidden>Upload a legacy backup JSON file with a top-level <code>songs</code> array. Imported songs are saved to your signed-in Supabase account.</p>
         </div>
         <input type="file" id="import-file-input" multiple>
+        <p id="import-cloud-note" class="storage-note">Sign in to pull songs and setlists from the cloud into this device.</p>
         <div class="modal-actions">
           <button id="import-run-btn" class="btn primary">Import</button>
+          <button id="import-cloud-btn" class="btn" type="button">Pull from Cloud</button>
           <button id="import-cancel-btn" class="btn">Cancel</button>
         </div>
       </div>

@@ -200,7 +200,9 @@ const AuthGate = (() => {
     const label = escapeHTML(session.user.email || 'Signed in');
     pill.innerHTML = `
       <span class="auth-session-label">${label}</span>
-      <button type="button" class="btn auth-signout-btn">Sign out</button>
+      <button type="button" class="btn auth-signout-btn" title="Sign out" aria-label="Sign out">
+        <i class="fas fa-sign-out-alt" aria-hidden="true"></i>
+      </button>
     `;
     pill.hidden = false;
     pill.querySelector('.auth-signout-btn')?.addEventListener('click', async () => {
@@ -1131,6 +1133,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('export-setlist-btn').addEventListener('click', () => {
                     const m = document.getElementById('export-modal');
                     if (m) m.style.display = 'flex';
+                    this.updateCloudActionState();
                     this.updateExportFormatOptions();
                 });
             } else if (tab === 'performance') {
@@ -1327,6 +1330,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.setlistSelect = document.getElementById('setlist-select');
             this.performanceSetlistSelect = document.getElementById('performance-setlist-select');
             this.setupEventListeners();
+            this.updateCloudActionState();
             // Ensure nav button active state matches initialTab
             try {
                 if (initialTab !== 'songs') {
@@ -1481,6 +1485,234 @@ document.addEventListener('DOMContentLoaded', () => {
             return { sanitizedSongs: sanitized, changed };
         },
 
+        getSongTimestamp(song) {
+            const raw = song?.lastEditedAt || song?.updatedAt || song?.createdAt || song?.updated_at || song?.created_at || 0;
+            const numeric = typeof raw === 'number' ? raw : Date.parse(raw);
+            return Number.isFinite(numeric) ? numeric : 0;
+        },
+
+        adaptRemoteSong(remoteSong) {
+            const localSong = {
+                id: String(remoteSong?.id || '').trim(),
+                title: String(remoteSong?.title || '').trim() || 'Untitled',
+                lyrics: String(remoteSong?.lyrics || ''),
+                createdAt: remoteSong?.created_at || remoteSong?.createdAt || new Date().toISOString(),
+                lastEditedAt:
+                    remoteSong?.updated_at ||
+                    remoteSong?.lastEditedAt ||
+                    remoteSong?.updatedAt ||
+                    remoteSong?.created_at ||
+                    remoteSong?.createdAt ||
+                    new Date().toISOString(),
+            };
+            const { song: normalizedSong } = this.normalizeSongRecord(localSong);
+            return normalizedSong;
+        },
+
+        mergeRemoteSongsIntoLocal(remoteSongs) {
+            const mergedSongs = this.songs.map((song) => ({ ...song }));
+            const songIndexById = new Map(mergedSongs.map((song, index) => [String(song.id || '').trim(), index]));
+            let changed = false;
+
+            for (const remoteSong of remoteSongs || []) {
+                const adaptedSong = this.adaptRemoteSong(remoteSong);
+                if (!adaptedSong.id) continue;
+
+                if (!songIndexById.has(adaptedSong.id)) {
+                    songIndexById.set(adaptedSong.id, mergedSongs.length);
+                    mergedSongs.push(adaptedSong);
+                    changed = true;
+                    continue;
+                }
+
+                const existingIndex = songIndexById.get(adaptedSong.id);
+                const existingSong = mergedSongs[existingIndex];
+                if (this.getSongTimestamp(adaptedSong) <= this.getSongTimestamp(existingSong)) {
+                    continue;
+                }
+
+                mergedSongs[existingIndex] = {
+                    ...existingSong,
+                    title: adaptedSong.title,
+                    lyrics: adaptedSong.lyrics,
+                    createdAt: adaptedSong.createdAt || existingSong.createdAt,
+                    lastEditedAt: adaptedSong.lastEditedAt || existingSong.lastEditedAt,
+                };
+                changed = true;
+            }
+
+            return { mergedSongs, changed };
+        },
+
+        getSetlistTimestamp(setlist) {
+            const raw = setlist?.updatedAt || setlist?.createdAt || setlist?.updated_at || setlist?.created_at || 0;
+            const numeric = typeof raw === 'number' ? raw : Date.parse(raw);
+            return Number.isFinite(numeric) ? numeric : 0;
+        },
+
+        adaptRemoteSetlist(remoteSetlist) {
+            return {
+                id: String(remoteSetlist?.id || '').trim(),
+                name: normalizeSetlistName(remoteSetlist?.name || 'Imported Setlist'),
+                songs: Array.isArray(remoteSetlist?.songs) ? remoteSetlist.songs.filter(Boolean) : [],
+                createdAt: remoteSetlist?.created_at || remoteSetlist?.createdAt || Date.now(),
+                updatedAt: remoteSetlist?.updated_at || remoteSetlist?.updatedAt || remoteSetlist?.created_at || remoteSetlist?.createdAt || Date.now(),
+            };
+        },
+
+        mergeRemoteSetlistsIntoLocal(remoteSetlists, localSetlists) {
+            const mergedSetlists = (localSetlists || []).map((setlist) => ({ ...setlist }));
+            const setlistIndexById = new Map(mergedSetlists.map((setlist, index) => [String(setlist.id || '').trim(), index]));
+            let changed = false;
+
+            for (const remoteSetlist of remoteSetlists || []) {
+                const adaptedSetlist = this.adaptRemoteSetlist(remoteSetlist);
+                if (!adaptedSetlist.id) continue;
+
+                if (!setlistIndexById.has(adaptedSetlist.id)) {
+                    setlistIndexById.set(adaptedSetlist.id, mergedSetlists.length);
+                    mergedSetlists.push(adaptedSetlist);
+                    changed = true;
+                    continue;
+                }
+
+                const existingIndex = setlistIndexById.get(adaptedSetlist.id);
+                const existingSetlist = mergedSetlists[existingIndex];
+                if (this.getSetlistTimestamp(adaptedSetlist) <= this.getSetlistTimestamp(existingSetlist)) {
+                    continue;
+                }
+
+                mergedSetlists[existingIndex] = {
+                    ...existingSetlist,
+                    name: adaptedSetlist.name,
+                    songs: adaptedSetlist.songs,
+                    createdAt: adaptedSetlist.createdAt || existingSetlist.createdAt,
+                    updatedAt: adaptedSetlist.updatedAt || existingSetlist.updatedAt,
+                };
+                changed = true;
+            }
+
+            return { mergedSetlists, changed };
+        },
+
+        updateCloudActionState() {
+            const isSignedIn = AuthGate.isAuthenticated();
+            const email = AuthGate.getUser()?.email || '';
+            const importBtn = document.getElementById('import-cloud-btn');
+            const exportBtn = document.getElementById('export-cloud-btn');
+            const importNote = document.getElementById('import-cloud-note');
+            const exportNote = document.getElementById('export-cloud-note');
+
+            if (importBtn) importBtn.disabled = !isSignedIn;
+            if (exportBtn) exportBtn.disabled = !isSignedIn;
+
+            if (importNote) {
+                importNote.textContent = isSignedIn
+                    ? `Pull songs and setlists from Supabase for ${email || 'your account'}.`
+                    : 'Sign in to pull songs and setlists from the cloud into this device.';
+            }
+            if (exportNote) {
+                exportNote.textContent = isSignedIn
+                    ? `Push this device's songs and setlists to Supabase for ${email || 'your account'}.`
+                    : 'Sign in to push your local songs and setlists to the cloud.';
+            }
+        },
+
+        async pullFromCloud() {
+            const user = AuthGate.getUser();
+            if (!user?.id) throw new Error('Sign in with Google before pulling from the cloud.');
+
+            console.info('[SongSync] Manual pull start', { userId: user.id });
+
+            let remoteSongs = [];
+            let remoteSetlists = [];
+            try {
+                try {
+                    await window.SongBinderSupabase?.upsertProfile?.(user);
+                } catch (error) {
+                    console.warn('[SongSync] Profile upsert skipped or failed', { userId: user.id, error });
+                }
+
+                remoteSongs = await window.SongBinderSupabase?.fetchSongsForUser?.(user.id) || [];
+                remoteSetlists = await window.SongBinderSupabase?.fetchSetlistsForUser?.(user.id) || [];
+                console.info('[SongSync] Remote fetch success', {
+                    userId: user.id,
+                    songs: remoteSongs.length,
+                    setlists: remoteSetlists.length,
+                });
+            } catch (error) {
+                console.error('[SongSync] Remote fetch failure', { userId: user.id, error });
+                throw error;
+            }
+
+            const localSetlists = SetlistsManager.getAllSetlists();
+            const { mergedSongs, changed: songsChanged } = this.mergeRemoteSongsIntoLocal(remoteSongs);
+            const { mergedSetlists, changed: setlistsChanged } = this.mergeRemoteSetlistsIntoLocal(remoteSetlists, localSetlists);
+
+            if (songsChanged) {
+                this.songs = mergedSongs;
+                await DB.putSongs(this.songs);
+            }
+            if (setlistsChanged) {
+                for (const setlist of mergedSetlists) {
+                    await DB.putSetlist(setlist);
+                }
+            }
+            if (setlistsChanged) {
+                await SetlistsManager.load();
+            }
+
+            this.renderSongs();
+            this.renderSetlists();
+
+            console.info('[SongSync] Manual pull end', {
+                userId: user.id,
+                songsChanged,
+                setlistsChanged,
+            });
+
+            return {
+                songsPulled: remoteSongs.length,
+                setlistsPulled: remoteSetlists.length,
+                songsChanged,
+                setlistsChanged,
+            };
+        },
+
+        async pushToCloud() {
+            const user = AuthGate.getUser();
+            if (!user?.id) throw new Error('Sign in with Google before pushing to the cloud.');
+
+            console.info('[SongSync] Manual push start', { userId: user.id });
+
+            try {
+                try {
+                    await window.SongBinderSupabase?.upsertProfile?.(user);
+                } catch (error) {
+                    console.warn('[SongSync] Profile upsert skipped or failed', { userId: user.id, error });
+                }
+
+                const localSetlists = SetlistsManager.getAllSetlists();
+                await Promise.all(this.songs.map((song) => window.SongBinderSupabase?.upsertSongToSupabase?.(song, user.id)));
+                await Promise.all(localSetlists.map((setlist) => window.SongBinderSupabase?.upsertSetlistToSupabase?.(setlist, user.id)));
+                await Promise.all(localSetlists.map((setlist) => window.SongBinderSupabase?.replaceSetlistSongsInSupabase?.(setlist, user.id)));
+
+                console.info('[SongSync] Manual push end', {
+                    userId: user.id,
+                    songsPushed: this.songs.length,
+                    setlistsPushed: localSetlists.length,
+                });
+
+                return {
+                    songsPushed: this.songs.length,
+                    setlistsPushed: localSetlists.length,
+                };
+            } catch (error) {
+                console.error('[SongSync] Manual push failure', { userId: user.id, error });
+                throw error;
+            }
+        },
+
         // Event Listeners
 
         setupEventListeners() {
@@ -1534,6 +1766,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('export-cancel-btn')?.addEventListener('click', ()=> exportModal.style.display='none');
                 document.querySelectorAll('input[name="export-what"]').forEach(r=> r.addEventListener('change', ()=> this.updateExportFormatOptions()));
                 document.getElementById('export-download-btn')?.addEventListener('click', ()=> this.handleExportDownload());
+                document.getElementById('export-cloud-btn')?.addEventListener('click', async ()=> {
+                    try {
+                        const result = await this.pushToCloud();
+                        showToast(`Pushed ${result.songsPushed} song(s) and ${result.setlistsPushed} setlist(s) to the cloud.`, 'success', 4500);
+                    } catch (error) {
+                        showToast(error?.message || 'Cloud push failed.', 'error', 4500);
+                    }
+                });
                 const reminderToggle = document.getElementById('backup-reminder-toggle');
                 const reminderDays = document.getElementById('backup-reminder-days');
                 this.loadBackupReminderSettings();
@@ -1551,6 +1791,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 importModal.addEventListener('click', (e)=>{ if (e.target === importModal) importModal.style.display='none'; });
                 document.getElementById('import-cancel-btn')?.addEventListener('click', ()=> importModal.style.display='none');
                 document.getElementById('import-run-btn')?.addEventListener('click', ()=> this.handleImportRun());
+                document.getElementById('import-cloud-btn')?.addEventListener('click', async ()=> {
+                    try {
+                        const result = await this.pullFromCloud();
+                        showToast(`Pulled ${result.songsPulled} song(s) and ${result.setlistsPulled} setlist(s) from the cloud.`, 'success', 4500);
+                    } catch (error) {
+                        showToast(error?.message || 'Cloud pull failed.', 'error', 4500);
+                    }
+                });
                 document.querySelectorAll('input[name="import-type"]').forEach(r=> r.addEventListener('change', ()=> this.updateImportOptionsVisibility()));
                 this.updateImportOptionsVisibility();
             }
@@ -1574,6 +1822,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (m) {
                         e.preventDefault();
                         m.style.display = 'flex';
+                        this.updateCloudActionState();
                         this.updateExportFormatOptions();
                     }
                 }
@@ -1883,6 +2132,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!modal) return;
             const radio = document.querySelector(`input[name="import-type"][value="${type}"]`);
             if (radio) radio.checked = true;
+            this.updateCloudActionState();
             this.updateImportOptionsVisibility();
             modal.style.display = 'flex';
         },

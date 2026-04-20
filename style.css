@@ -1011,6 +1011,18 @@ img, video, iframe {
 #export-modal .modal-actions,
 #import-modal .modal-actions {
   margin-top: 0.6rem;
+  flex-wrap: wrap;
+}
+
+#export-cloud-note,
+#import-cloud-note {
+  margin: 0.75rem 0 0;
+}
+
+#export-cloud-btn[disabled],
+#import-cloud-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Improved setlist editor layout */
@@ -2087,30 +2099,60 @@ button:focus, .btn:focus, [role="tab"]:focus {
 }
 
 .auth-session-pill {
-  grid-column: 1;
-  justify-self: start;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.65rem;
-  max-width: 100%;
-  padding: 0.55rem 0.8rem;
+  width: fit-content;
+  max-width: min(92vw, 28rem);
+  margin: 0.35rem auto 0;
+  padding: 0.45rem 0.7rem 0.45rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
   font-size: 0.88rem;
+  box-shadow: 0 0 18px rgba(67, 240, 255, 0.08);
 }
 
 .auth-session-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: min(30vw, 18rem);
+  min-width: 0;
+  max-width: min(62vw, 20rem);
+  text-align: center;
 }
 
 .auth-signout-btn {
-  padding: 0.35rem 0.7rem;
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  padding: 0;
   border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+}
+
+.auth-signout-btn:hover,
+.auth-signout-btn:focus {
+  color: var(--accent-primary);
+  border-color: var(--accent-glow);
+  background: rgba(67, 240, 255, 0.08);
+}
+
+.header-brand {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  min-width: 0;
 }
 
 @media (max-width: 700px) {
@@ -2119,11 +2161,8 @@ button:focus, .btn:focus, [role="tab"]:focus {
   }
 
   .auth-session-pill {
-    max-width: calc(100vw - 10rem);
-    padding-right: 0.55rem;
-  }
-
-  .auth-signout-btn {
-    padding-inline: 0.55rem;
+    max-width: min(calc(100vw - 2rem), 22rem);
+    padding-left: 0.75rem;
+    padding-right: 0.5rem;
   }
 }
