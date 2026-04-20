@@ -1620,6 +1620,32 @@ document.addEventListener('DOMContentLoaded', () => {
                     ? `Push this device's songs and setlists to Supabase for ${email || 'your account'}.`
                     : 'Sign in to push your local songs and setlists to the cloud.';
             }
+            this.updateSyncStatusText();
+        },
+
+        formatSyncTimestamp(value) {
+            if (!value) return '';
+            const parsed = Date.parse(value);
+            if (Number.isNaN(parsed)) return '';
+            try {
+                return new Date(parsed).toLocaleString();
+            } catch {
+                return '';
+            }
+        },
+
+        updateSyncStatusText() {
+            const lastPulled = this.formatSyncTimestamp(localStorage.getItem('songbinderLastPulledAt'));
+            const lastPushed = this.formatSyncTimestamp(localStorage.getItem('songbinderLastPushedAt'));
+            const importStatus = document.getElementById('import-sync-status');
+            const exportStatus = document.getElementById('export-sync-status');
+
+            if (importStatus) {
+                importStatus.textContent = lastPulled ? `Last pulled: ${lastPulled}` : 'No cloud pull yet on this device.';
+            }
+            if (exportStatus) {
+                exportStatus.textContent = lastPushed ? `Last pushed: ${lastPushed}` : 'No cloud push yet from this device.';
+            }
         },
 
         async pullFromCloud() {
@@ -1792,6 +1818,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('export-cloud-btn')?.addEventListener('click', async ()=> {
                     try {
                         const result = await this.pushToCloud();
+                        localStorage.setItem('songbinderLastPushedAt', new Date().toISOString());
+                        this.updateSyncStatusText();
                         showToast(`Pushed ${result.songsPushed} song(s) and ${result.setlistsPushed} setlist(s) to the cloud.`, 'success', 4500);
                     } catch (error) {
                         showToast(error?.message || 'Cloud push failed.', 'error', 4500);
@@ -1817,6 +1845,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('import-cloud-btn')?.addEventListener('click', async ()=> {
                     try {
                         const result = await this.pullFromCloud();
+                        localStorage.setItem('songbinderLastPulledAt', new Date().toISOString());
+                        this.updateSyncStatusText();
                         showToast(`Pulled ${result.songsPulled} song(s) and ${result.setlistsPulled} setlist(s) from the cloud.`, 'success', 4500);
                     } catch (error) {
                         showToast(error?.message || 'Cloud pull failed.', 'error', 4500);

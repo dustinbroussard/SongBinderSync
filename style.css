@@ -1001,28 +1001,80 @@ img, video, iframe {
   max-width: 520px !important;
   border-radius: 16px !important;
   padding: 1.4rem 1.4rem 1rem 1.4rem !important;
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
 }
 
 #export-modal h2,
 #import-modal h2 {
   margin-top: 0;
+  margin-bottom: 0;
+  text-align: center;
+}
+
+#export-modal .modal-section,
+#import-modal .modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  text-align: left;
+}
+
+.modal-option-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.modal-option-group label {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+}
+
+.modal-option-group.compact {
+  gap: 0.45rem;
 }
 
 #export-modal .modal-actions,
 #import-modal .modal-actions {
   margin-top: 0.6rem;
   flex-wrap: wrap;
+  justify-content: flex-start;
 }
 
 #export-cloud-note,
 #import-cloud-note {
-  margin: 0.75rem 0 0;
+  margin: 0;
 }
 
 #export-cloud-btn[disabled],
 #import-cloud-btn[disabled] {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.modal-sync-status {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted, var(--text-secondary));
+  opacity: 0.82;
+}
+
+#import-file-input {
+  width: 100%;
+}
+
+#export-format-row strong {
+  color: var(--text-primary);
+}
+
+#import-options label,
+.backup-reminder-row label {
+  align-self: flex-start;
 }
 
 /* Improved setlist editor layout */

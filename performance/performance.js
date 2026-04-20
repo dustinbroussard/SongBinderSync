@@ -218,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
         perSongFontSizes: safeParseFromStorage('perSongFontSizes', {}),
         perSongAutoscrollSpeeds: safeParseFromStorage('perSongAutoscrollSpeeds', {}),
         autoScrollOnStart: safeParseFromStorage('autoScrollOnStart', {}),
-        minFontSize: 16,
+        minFontSize: 2,
         maxFontSize: 72,
         fontSizeStep: 1,
         fontFab: null,
