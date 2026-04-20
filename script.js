@@ -138,6 +138,7 @@ const AuthGate = (() => {
   let appRef = null;
   let started = false;
   let currentSession = null;
+  let initialStateResolved = false;
 
   const ui = {
     landing: () => document.getElementById('landing-screen'),
@@ -303,6 +304,9 @@ const AuthGate = (() => {
 
     const supabaseClient = ensureClient();
     supabaseClient.auth.onAuthStateChange((_event, session) => {
+      if (!initialStateResolved && !session) {
+        return;
+      }
       setSession(session);
       if (session) {
         setStoredMode('authenticated');
@@ -322,20 +326,24 @@ const AuthGate = (() => {
       if (data?.session) {
         setSession(data.session);
         setStoredMode('authenticated');
+        initialStateResolved = true;
         await startApp('authenticated', data.session);
         return;
       }
     } catch (err) {
       console.error('Session bootstrap failed', err);
+      initialStateResolved = true;
       showLanding('Sign-in is unavailable right now. You can still continue offline.', 'error');
       return;
     }
 
     if (getStoredMode() === 'offline') {
+      initialStateResolved = true;
       await startApp('offline');
       return;
     }
 
+    initialStateResolved = true;
     showLanding('Sign in with Google or continue offline on this device.');
   }
 
