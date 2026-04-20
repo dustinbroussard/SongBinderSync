@@ -1,6 +1,6 @@
 # SongBinder
 
-SongBinder is a local-first progressive web application for musicians who need an offline-capable song library, setlist builder, and live-performance lyric viewer. The application is delivered as a static front-end with no bundled server runtime: all primary business data is stored in the browser, while optional AI and OCR features call external services or libraries from the client. The codebase includes three coordinated application surfaces:
+SongBinder is a local-first progressive web application for musicians who need an offline-capable song library, setlist builder, and live-performance lyric viewer. The application is delivered as a static front-end with no bundled server runtime: all primary business data is stored in the browser first, while optional cloud transfer, AI, and OCR features call external services or libraries from the client. The codebase includes three coordinated application surfaces:
 
 1. **Main library application** for song, setlist, import, export, and launch workflows.
 2. **Full-screen performance application** for live playback, autoscroll, and stage navigation.
@@ -8,7 +8,12 @@ SongBinder is a local-first progressive web application for musicians who need a
 
 ## Local Auth Setup
 
-Supabase Auth is optional and currently limited to sign-in state plus explicit user-triggered flows. The app remains local-first: songs and setlists still live in IndexedDB, and there is no full sync implementation yet.
+Supabase Auth is optional. The app remains local-first: normal editing, song creation, setlist changes, backup, import, and export all continue to use IndexedDB on the current device first. When signed in, the app now exposes explicit manual cloud transfer actions:
+
+- `Pull from Cloud` inside the Import modal merges remote songs and setlists into local IndexedDB.
+- `Push to Cloud` inside the Export modal uploads local songs and setlists to Supabase without deleting remote data.
+- Normal editing does not automatically sync in the background.
+- Cloud transfer currently preserves setlist membership and order through normalized `setlists` and `setlist_songs` tables.
 
 1. Copy `.env.example` to `.env` or `.env.local`.
 2. Set `SUPABASE_URL` and `SUPABASE_ANON_KEY`.
@@ -32,6 +37,7 @@ Supabase Auth is optional and currently limited to sign-in state plus explicit u
 | OCR                     | Tesseract.js + local language files / CDN fallback          | Reads setlist images and converts them into song-title candidates.                           |
 | Reordering              | SortableJS                                                  | Enables drag-and-drop ordering inside setlists.                                              |
 | Optional AI integration | OpenRouter HTTP API                                         | Powers editor-side lyric generation, rewriting, chord suggestions, and formatting.           |
+| Optional cloud transfer | Supabase Auth + PostgREST                                    | Google sign-in plus explicit manual push/pull of songs and setlists.                          |
 | Offline delivery        | Service worker + Web App Manifest                           | Caches application shells and assets for PWA-like offline use.                               |
 
 ### 1.2 High-Level Topology
@@ -57,6 +63,7 @@ flowchart TD
     Main --> OCR[Tesseract.js]
     Main --> DOCX[Mammoth.js]
     Main --> Search[Fuse.js]
+    Main --> Supabase[Supabase Auth / PostgREST]
     Editor --> OpenRouter[OpenRouter API]
     Main --> CDN[Tessdata CDN fallback]
 ```
@@ -71,6 +78,8 @@ flowchart TD
   - songs library CRUD,
   - setlist CRUD and ordering,
   - import/export workflows,
+  - manual cloud pull/push workflows,
+  - Google sign-in and offline-mode entry,
   - OCR-based setlist ingestion,
   - search, sorting, favorites,
   - launch into editor or performance mode.
@@ -143,6 +152,7 @@ SongBinder uses a single IndexedDB database named `hrr-setlist-db` with schema v
 
 | Integration                         | Type                    | Trigger                                  | Failure behavior                                                       |
 | ----------------------------------- | ----------------------- | ---------------------------------------- | ---------------------------------------------------------------------- |
+| Supabase Auth / PostgREST           | HTTPS API               | Google sign-in and manual cloud transfer | App remains local-only; cloud actions fail non-destructively with logs |
 | OpenRouter                          | HTTPS API               | Editor AI tools and model list discovery | Editor surfaces warnings if API key is missing or requests fail.       |
 | Tesseract local assets              | Local web worker + WASM | OCR setlist import                       | Falls back to tessdata CDN if local language asset headers are unsafe. |
 | Tessdata CDN                        | HTTPS asset delivery    | OCR fallback path                        | OCR still fails gracefully if unavailable.                             |
@@ -171,6 +181,7 @@ SongBinder uses a single IndexedDB database named `hrr-setlist-db` with schema v
 - Undo a delete through action toasts.
 - Delete all songs from the toolbar.
 - Open empty-state shortcuts to create or upload the first song.
+- Keep normal song edits local-first even when authenticated.
 
 #### Setlist Management
 
@@ -182,6 +193,18 @@ SongBinder uses a single IndexedDB database named `hrr-setlist-db` with schema v
 - Import setlists from plain text or `.docx` title lists using fuzzy title matching.
 - Import setlists from OCR-extracted images.
 - Export current setlist or all setlists as JSON, text lists, text with lyrics, or PDF.
+- Preserve normalized setlist membership and order during manual cloud transfer.
+
+#### Auth and Cloud Transfer
+
+- Sign in with Google through Supabase Auth from the landing screen.
+- Continue offline without signing in and keep using the app locally on the device.
+- Show signed-in identity in the header with a compact sign-out control.
+- Pull songs and setlists from Supabase through the Import modal.
+- Push songs and setlists to Supabase through the Export modal.
+- Merge remote songs and setlists into local IndexedDB by stable local IDs.
+- Show last pulled and last pushed timestamps in the Import and Export modals.
+- Keep legacy backup import to Supabase available as a separate explicit flow.
 
 #### Performance / Lyrics View
 
@@ -224,11 +247,13 @@ SongBinder uses a single IndexedDB database named `hrr-setlist-db` with schema v
 - Persistent storage requests via `navigator.storage.persist()`.
 - Offline caching for the main app, editor, performance shell, fonts, icons, and local libraries.
 - Database self-repair if required object stores are missing.
+- Auth bootstrap that preserves the current screen until session or offline mode is resolved.
 - Backup reminders driven by elapsed time since the last full export.
 - Safe parsing and normalization of imported content.
 - Fuzzy match indexing for search and OCR setlist import.
 - Wake lock and landscape lock requests during performance mode.
 - Popstate interception during performance mode to prevent accidental exit.
+- Manual Supabase profile bootstrap plus manual cloud push/pull logging.
 
 ---
 
@@ -255,6 +280,7 @@ SongBinder uses a single IndexedDB database named `hrr-setlist-db` with schema v
 | Key                                                                  | Purpose                                                |
 | -------------------------------------------------------------------- | ------------------------------------------------------ |
 | `theme`                                                              | Shared dark/light theme across app surfaces.           |
+| `songbinderAccessMode`                                                | Whether the user last entered in authenticated or offline mode. |
 | `songSortMode`                                                       | Main library sort order.                               |
 | `songsFavoritesOnly`                                                 | Favorites-only filter state.                           |
 | `lastActiveTab`                                                      | Last selected main tab.                                |
@@ -266,6 +292,7 @@ SongBinder uses a single IndexedDB database named `hrr-setlist-db` with schema v
 | `perSongFontSizes`                                                   | Song-specific lyric font sizes.                        |
 | `performanceShowChords`                                              | Global chord visibility in performance mode.           |
 | `tapFeedbackMode`                                                    | Tap audio/haptic behavior in performance mode.         |
+| `songbinderLastPulledAt`, `songbinderLastPushedAt`                   | Manual cloud transfer timestamps shown in modal UI.    |
 | `backupReminderEnabled`, `backupReminderDays`, `lastExportAt`        | Backup reminder system.                                |
 | `editorMode`                                                         | Editor display mode.                                   |
 | `measureMode_<songId>`                                               | Per-song editor measure mode.                          |
@@ -330,11 +357,51 @@ flowchart LR
 5. Performance page loads songs from IndexedDB and reconstructs the ordered play queue.
 6. If the same setlist was previously in progress, the app may prompt to resume.
 
+#### Manual Cloud Pull Flow
+
+1. User signs in with Google or stays in local-only mode.
+2. User opens the Import modal and selects `Pull from Cloud`.
+3. The app validates that a Supabase user is available.
+4. The client optionally upserts a minimal profile row.
+5. Songs are fetched from `songs` and mapped back to local IDs via `legacy_id`.
+6. Setlists are fetched from `setlists`, and membership/order are fetched from `setlist_songs`.
+7. Remote records are merged into local IndexedDB without deleting local-only records.
+8. The app stores a local `last pulled` timestamp and re-renders the current UI.
+
+#### Manual Cloud Push Flow
+
+1. User opens the Export modal and selects `Push to Cloud`.
+2. The app validates that a Supabase user is available.
+3. The client optionally upserts a minimal profile row.
+4. Local songs are upserted to `songs` using `(user_id, legacy_id)` as the sync key.
+5. Local setlists are upserted to `setlists` using `(user_id, legacy_id)` as the sync key.
+6. The client refreshes remote IDs, then rewrites `setlist_songs` rows for each pushed setlist.
+7. Positions are written one-based in Supabase so membership order is preserved.
+8. The app stores a local `last pushed` timestamp and leaves local IndexedDB as the source of truth for normal editing.
+
 ### 3.4 API and Integration Specifications
 
 #### Internal HTTP API
 
 There is **no first-party backend API** in this repository. All application logic executes client-side.
+
+#### External API: Supabase
+
+| Property    | Value                                                                 |
+| ----------- | --------------------------------------------------------------------- |
+| Auth        | Supabase OAuth with Google provider                                   |
+| Purpose     | Optional sign-in plus explicit manual cloud transfer                  |
+| Local model | IndexedDB remains primary for normal edits                            |
+| Songs sync  | `songs(user_id, legacy_id, title, lyrics, created_at, updated_at)`    |
+| Setlists    | `setlists(user_id, legacy_id, name, created_at, updated_at)`          |
+| Membership  | `setlist_songs(setlist_id, song_id, position, user_id, created_at)`   |
+
+Current cloud sync assumptions:
+
+- Local song IDs remain browser-generated strings and are stored remotely in `songs.legacy_id`.
+- Local setlist IDs remain browser-generated strings and are stored remotely in `setlists.legacy_id`.
+- Remote UUID primary keys stay remote-only and are used for normalized relationship writes.
+- Cloud transfer is merge-oriented only; there is no delete sync or conflict-resolution engine yet.
 
 #### External API: OpenRouter
 
@@ -402,6 +469,11 @@ Additional model discovery call:
 | Current setlist | JSON, TXT track list, TXT track list + lyrics, PDF                                       |
 | All setlists    | JSON, TXT track list, TXT track list + lyrics, PDF                                       |
 | Everything      | JSON backup (songs + setlists), songs-only JSON                                          |
+
+Manual cloud actions available from the same modal surfaces:
+
+- Import modal: `Pull from Cloud`
+- Export modal: `Push to Cloud`
 
 ### 3.6 Security and Content Handling
 
