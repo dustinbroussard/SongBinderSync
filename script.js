@@ -1493,7 +1493,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         adaptRemoteSong(remoteSong) {
             const localSong = {
-                id: String(remoteSong?.id || '').trim(),
+                id: String(remoteSong?.legacy_id || remoteSong?.id || '').trim(),
                 title: String(remoteSong?.title || '').trim() || 'Untitled',
                 lyrics: String(remoteSong?.lyrics || ''),
                 createdAt: remoteSong?.created_at || remoteSong?.createdAt || new Date().toISOString(),
@@ -1550,23 +1550,27 @@ document.addEventListener('DOMContentLoaded', () => {
             return Number.isFinite(numeric) ? numeric : 0;
         },
 
-        adaptRemoteSetlist(remoteSetlist) {
+        adaptRemoteSetlist(remoteSetlist, remoteSongIdToLocalId = new Map()) {
             return {
-                id: String(remoteSetlist?.id || '').trim(),
+                id: String(remoteSetlist?.legacy_id || remoteSetlist?.id || '').trim(),
                 name: normalizeSetlistName(remoteSetlist?.name || 'Imported Setlist'),
-                songs: Array.isArray(remoteSetlist?.songs) ? remoteSetlist.songs.filter(Boolean) : [],
+                songs: Array.isArray(remoteSetlist?.songs)
+                    ? remoteSetlist.songs
+                        .map((songId) => remoteSongIdToLocalId.get(String(songId || '').trim()) || String(songId || '').trim())
+                        .filter(Boolean)
+                    : [],
                 createdAt: remoteSetlist?.created_at || remoteSetlist?.createdAt || Date.now(),
                 updatedAt: remoteSetlist?.updated_at || remoteSetlist?.updatedAt || remoteSetlist?.created_at || remoteSetlist?.createdAt || Date.now(),
             };
         },
 
-        mergeRemoteSetlistsIntoLocal(remoteSetlists, localSetlists) {
+        mergeRemoteSetlistsIntoLocal(remoteSetlists, localSetlists, remoteSongIdToLocalId = new Map()) {
             const mergedSetlists = (localSetlists || []).map((setlist) => ({ ...setlist }));
             const setlistIndexById = new Map(mergedSetlists.map((setlist, index) => [String(setlist.id || '').trim(), index]));
             let changed = false;
 
             for (const remoteSetlist of remoteSetlists || []) {
-                const adaptedSetlist = this.adaptRemoteSetlist(remoteSetlist);
+                const adaptedSetlist = this.adaptRemoteSetlist(remoteSetlist, remoteSongIdToLocalId);
                 if (!adaptedSetlist.id) continue;
 
                 if (!setlistIndexById.has(adaptedSetlist.id)) {
@@ -1647,7 +1651,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const localSetlists = SetlistsManager.getAllSetlists();
             const { mergedSongs, changed: songsChanged } = this.mergeRemoteSongsIntoLocal(remoteSongs);
-            const { mergedSetlists, changed: setlistsChanged } = this.mergeRemoteSetlistsIntoLocal(remoteSetlists, localSetlists);
+            const remoteSongIdToLocalId = new Map(
+                (remoteSongs || []).map((song) => [String(song?.id || '').trim(), String(song?.legacy_id || song?.id || '').trim()]).filter(([remoteId, localId]) => remoteId && localId)
+            );
+            const { mergedSetlists, changed: setlistsChanged } = this.mergeRemoteSetlistsIntoLocal(remoteSetlists, localSetlists, remoteSongIdToLocalId);
 
             if (songsChanged) {
                 this.songs = mergedSongs;
@@ -1695,7 +1702,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 const localSetlists = SetlistsManager.getAllSetlists();
                 await Promise.all(this.songs.map((song) => window.SongBinderSupabase?.upsertSongToSupabase?.(song, user.id)));
                 await Promise.all(localSetlists.map((setlist) => window.SongBinderSupabase?.upsertSetlistToSupabase?.(setlist, user.id)));
-                await Promise.all(localSetlists.map((setlist) => window.SongBinderSupabase?.replaceSetlistSongsInSupabase?.(setlist, user.id)));
+                const remoteSongs = await window.SongBinderSupabase?.fetchSongsForUser?.(user.id) || [];
+                const remoteSetlists = await window.SongBinderSupabase?.fetchSetlistsForUser?.(user.id) || [];
+                const localToRemoteSongId = new Map(
+                    remoteSongs.map((song) => [String(song?.legacy_id || song?.id || '').trim(), String(song?.id || '').trim()]).filter(([localId, remoteId]) => localId && remoteId)
+                );
+                const localToRemoteSetlistId = new Map(
+                    remoteSetlists.map((setlist) => [String(setlist?.legacy_id || setlist?.id || '').trim(), String(setlist?.id || '').trim()]).filter(([localId, remoteId]) => localId && remoteId)
+                );
+                await Promise.all(localSetlists.map((setlist) => {
+                    const remoteSetlistId = localToRemoteSetlistId.get(String(setlist.id || '').trim());
+                    const remoteSongIds = (setlist.songs || []).map((songId) => localToRemoteSongId.get(String(songId || '').trim())).filter(Boolean);
+                    if (!remoteSetlistId) {
+                        console.warn('[SongSync] Missing remote setlist mapping for legacy_id', { localSetlistId: setlist.id });
+                        return Promise.resolve();
+                    }
+                    return window.SongBinderSupabase?.replaceSetlistSongsInSupabase?.(remoteSetlistId, remoteSongIds, user.id);
+                }));
 
                 console.info('[SongSync] Manual push end', {
                     userId: user.id,

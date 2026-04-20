@@ -54,10 +54,14 @@
     console.error(`[SongSync] ${label} Supabase error`, error);
   }
 
+  function isUuid(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
+  }
+
   function buildSongBaseRow(song, userId) {
     return {
-      id: String(song?.id || '').trim(),
       user_id: String(userId || '').trim(),
+      legacy_id: String(song?.id || '').trim(),
       title: String(song?.title || '').trim(),
       lyrics: String(song?.lyrics || ''),
     };
@@ -67,7 +71,8 @@
     const message = String(error?.message || error?.details || '').toLowerCase();
     return message.includes('column') && (
       message.includes('created_at') ||
-      message.includes('updated_at')
+      message.includes('updated_at') ||
+      message.includes('legacy_id')
     );
   }
 
@@ -105,18 +110,15 @@
     const supabaseClient = getClient();
     if (!supabaseClient || !userId) return [];
 
-    let result = await supabaseClient
+    const result = await supabaseClient
       .from('songs')
-      .select('id,user_id,title,lyrics,created_at,updated_at')
+      .select('id,user_id,title,lyrics,created_at,updated_at,legacy_id')
       .eq('user_id', userId);
-
-    if (result.error && isMissingColumnError(result.error)) {
-      result = await supabaseClient
-        .from('songs')
-        .select('id,user_id,title,lyrics')
-        .eq('user_id', userId);
+    if (result.error) {
+      logSyncError('Songs fetch', result.error);
+      throw result.error;
     }
-    if (result.error) throw result.error;
+    console.info('[SongSync] Songs fetch row keys', Object.keys(result.data?.[0] || {}));
     return result.data || [];
   }
 
@@ -124,28 +126,32 @@
     const supabaseClient = getClient();
     if (!supabaseClient || !userId) return [];
 
-    let result = await supabaseClient
+    const result = await supabaseClient
       .from('setlists')
-      .select('id,user_id,name,songs,created_at,updated_at')
+      .select('id,user_id,name,created_at,updated_at,legacy_id')
       .eq('user_id', userId);
-
-    if (result.error && isMissingColumnError(result.error)) {
-      result = await supabaseClient
-        .from('setlists')
-        .select('id,user_id,name,songs')
-        .eq('user_id', userId);
+    if (result.error) {
+      logSyncError('Setlists fetch', result.error);
+      if (String(result.error?.message || result.error?.details || '').toLowerCase().includes('legacy_id')) {
+        throw new Error('public.setlists.legacy_id is required for stable local-to-remote sync. Run the provided migration SQL first.');
+      }
+      throw result.error;
     }
-    if (result.error) throw result.error;
+    console.info('[SongSync] Setlists fetch row keys', Object.keys(result.data?.[0] || {}));
 
     let linkRows = [];
     try {
       const linkResult = await supabaseClient
         .from('setlist_songs')
         .select('setlist_id,song_id,position')
-        .eq('user_id', userId)
-        .order('position', { ascending: true });
+        .eq('user_id', userId);
       if (linkResult.error) throw linkResult.error;
-      linkRows = linkResult.data || [];
+      console.info('[SongSync] setlist_songs fetch row keys', Object.keys(linkResult.data?.[0] || {}));
+      linkRows = (linkResult.data || []).slice().sort((a, b) => {
+        const left = Number.isFinite(Number(a?.position)) ? Number(a.position) : 0;
+        const right = Number.isFinite(Number(b?.position)) ? Number(b.position) : 0;
+        return left - right;
+      });
     } catch (error) {
       if (!isMissingTableError(error) && !isMissingColumnError(error)) throw error;
       linkRows = [];
@@ -177,8 +183,8 @@
     if (!userId) throw new Error('User id is required for song upsert.');
 
     const rawPayload = {
-      id: song?.id,
       user_id: userId,
+      legacy_id: song?.id,
       title: song?.title,
       lyrics: song?.lyrics,
       created_at: song?.createdAt || song?.created_at || null,
@@ -197,7 +203,7 @@
 
     const result = await supabaseClient
       .from('songs')
-      .upsert(filteredPayload, { onConflict: 'id' });
+      .upsert(filteredPayload, { onConflict: 'user_id,legacy_id' });
     if (result.error) {
       logSyncError('Song upsert', result.error);
       throw result.error;
@@ -207,26 +213,9 @@
 
   function buildSetlistBaseRow(setlist, userId) {
     return {
-      id: String(setlist?.id || '').trim(),
       user_id: String(userId || '').trim(),
+      legacy_id: String(setlist?.id || '').trim(),
       name: String(setlist?.name || '').trim(),
-      songs: Array.isArray(setlist?.songs) ? setlist.songs.filter(Boolean) : [],
-    };
-  }
-
-  function buildSetlistTimestampRow(setlist, userId) {
-    const baseRow = buildSetlistBaseRow(setlist, userId);
-    const createdAt = setlist?.createdAt || setlist?.created_at || null;
-    const updatedAt =
-      setlist?.updatedAt ||
-      setlist?.updated_at ||
-      createdAt ||
-      Date.now();
-
-    return {
-      ...baseRow,
-      created_at: createdAt || updatedAt,
-      updated_at: updatedAt,
     };
   }
 
@@ -236,23 +225,34 @@
     if (!setlist?.id) throw new Error('Setlist is missing an id.');
     if (!userId) throw new Error('User id is required for setlist upsert.');
 
-    let result = await supabaseClient
-      .from('setlists')
-      .upsert(buildSetlistTimestampRow(setlist, userId), { onConflict: 'id' });
+    const rawPayload = {
+      user_id: userId,
+      legacy_id: setlist?.id,
+      name: setlist?.name,
+      songs: setlist?.songs,
+      created_at: setlist?.createdAt || setlist?.created_at || null,
+      updated_at: setlist?.updatedAt || setlist?.updated_at || null,
+    };
+    const filteredPayload = buildSetlistBaseRow(setlist, userId);
+    logSyncPayload('Setlist upsert', rawPayload, filteredPayload);
 
-    if (result.error && isMissingColumnError(result.error)) {
-      result = await supabaseClient
-        .from('setlists')
-        .upsert(buildSetlistBaseRow(setlist, userId), { onConflict: 'id' });
+    const result = await supabaseClient
+      .from('setlists')
+      .upsert(filteredPayload, { onConflict: 'user_id,legacy_id' });
+    if (result.error) {
+      logSyncError('Setlist upsert', result.error);
+      if (String(result.error?.message || result.error?.details || '').toLowerCase().includes('legacy_id')) {
+        throw new Error('public.setlists.legacy_id is required for stable local-to-remote sync. Run the provided migration SQL first.');
+      }
+      throw result.error;
     }
-    if (result.error) throw result.error;
     return result.data || null;
   }
 
-  async function replaceSetlistSongsInSupabase(setlist, userId) {
+  async function replaceSetlistSongsInSupabase(setlistId, remoteSongIds, userId) {
     const supabaseClient = getClient();
     if (!supabaseClient) throw new Error('Supabase client is not configured.');
-    if (!setlist?.id) throw new Error('Setlist is missing an id.');
+    if (!setlistId) throw new Error('Setlist id is missing.');
     if (!userId) throw new Error('User id is required for setlist song sync.');
 
     try {
@@ -260,23 +260,31 @@
         .from('setlist_songs')
         .delete()
         .eq('user_id', userId)
-        .eq('setlist_id', String(setlist.id));
+        .eq('setlist_id', String(setlistId));
       if (deleteError) throw deleteError;
 
-      const orderedSongIds = Array.isArray(setlist.songs) ? setlist.songs.filter(Boolean) : [];
+      const orderedSongIds = Array.isArray(remoteSongIds) ? remoteSongIds.filter(Boolean) : [];
       if (!orderedSongIds.length) return { skipped: false, count: 0 };
 
       const rows = orderedSongIds.map((songId, index) => ({
         user_id: String(userId),
-        setlist_id: String(setlist.id),
+        setlist_id: String(setlistId),
         song_id: String(songId),
         position: index,
       }));
+      logSyncPayload('setlist_songs replace', {
+        setlist_id: setlistId,
+        user_id: userId,
+        orderedSongIds,
+      }, rows);
 
       const { error: insertError } = await supabaseClient
         .from('setlist_songs')
         .insert(rows);
-      if (insertError) throw insertError;
+      if (insertError) {
+        logSyncError('setlist_songs replace', insertError);
+        throw insertError;
+      }
 
       return { skipped: false, count: rows.length };
     } catch (error) {
