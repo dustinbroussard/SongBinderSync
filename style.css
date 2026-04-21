@@ -1169,6 +1169,78 @@ img, video, iframe {
   backdrop-filter: blur(10px);
 }
 
+.install-banner {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+  transform: translateX(-50%);
+  z-index: 1250;
+  width: min(calc(100vw - 1.5rem), 36rem);
+  opacity: 0;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.install-banner[hidden] {
+  display: none;
+}
+
+.install-banner.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.install-banner-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--bg-secondary) 94%, transparent);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+}
+
+.install-banner-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.install-banner-copy strong {
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.install-banner-copy span {
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.install-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .install-banner-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .install-banner-actions {
+    justify-content: stretch;
+  }
+
+  .install-banner-actions .btn {
+    flex: 1 1 0;
+  }
+}
+
 @keyframes cloud-action-spin {
   to {
     transform: rotate(360deg);

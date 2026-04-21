@@ -24,6 +24,7 @@ document.addEventListener('DOMContentLoaded', function() {
         localStorage.setItem('theme', 'dark');
     }
     applyTheme(savedTheme);
+    InstallPrompt.init();
 });
 
 async function ensurePersistentStorage() {
@@ -182,6 +183,151 @@ function setGlobalBusyIndicator(isVisible, message = 'Syncing with cloud...') {
     indicator.hidden = true;
   }, UI_TRANSITION_MS);
 }
+
+const InstallPrompt = (() => {
+  let deferredPrompt = null;
+  let dismissedForSession = false;
+
+  const ui = {
+    banner: () => document.getElementById('install-banner'),
+    title: () => document.getElementById('install-banner-title'),
+    text: () => document.getElementById('install-banner-text'),
+    action: () => document.getElementById('install-banner-action'),
+    dismiss: () => document.getElementById('install-banner-dismiss'),
+  };
+
+  function isInstalled() {
+    try {
+      return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function isIosSafari() {
+    const ua = window.navigator.userAgent || '';
+    const isIos = /iphone|ipad|ipod/i.test(ua);
+    const isSafari = /safari/i.test(ua) && !/crios|fxios|edgios|chrome|android/i.test(ua);
+    return isIos && isSafari;
+  }
+
+  function showBanner({ title, text, actionLabel, manual = false }) {
+    const banner = ui.banner();
+    const action = ui.action();
+    if (!banner || !action || dismissedForSession || isInstalled()) return;
+    ui.title().textContent = title;
+    ui.text().textContent = text;
+    action.textContent = actionLabel;
+    action.dataset.manual = manual ? '1' : '0';
+    banner.hidden = false;
+    requestAnimationFrame(() => {
+      banner.classList.add('is-visible');
+    });
+  }
+
+  function hideBanner() {
+    const banner = ui.banner();
+    if (!banner) return;
+    banner.classList.remove('is-visible');
+    window.setTimeout(() => {
+      if (banner.classList.contains('is-visible')) return;
+      banner.hidden = true;
+    }, UI_TRANSITION_MS);
+  }
+
+  async function handleInstallAction() {
+    if (isInstalled()) {
+      hideBanner();
+      return;
+    }
+    if (deferredPrompt) {
+      const promptEvent = deferredPrompt;
+      deferredPrompt = null;
+      await promptEvent.prompt();
+      try {
+        await promptEvent.userChoice;
+      } catch {}
+      if (!isInstalled()) {
+        showDefaultBanner();
+      }
+      return;
+    }
+    if (isIosSafari()) {
+      showBanner({
+        title: 'Install SongBinder',
+        text: 'Tap Share, then choose Add to Home Screen.',
+        actionLabel: 'Got it',
+        manual: true,
+      });
+      return;
+    }
+    showBanner({
+      title: 'Install SongBinder',
+      text: 'Use your browser menu to install this app on your device.',
+      actionLabel: 'Got it',
+      manual: true,
+    });
+  }
+
+  function showDefaultBanner() {
+    if (deferredPrompt) {
+      showBanner({
+        title: 'Install SongBinder',
+        text: 'Add SongBinder to your device for a faster app-like experience.',
+        actionLabel: 'Install',
+      });
+      return;
+    }
+    if (isIosSafari()) {
+      showBanner({
+        title: 'Install SongBinder',
+        text: 'Tap Share, then choose Add to Home Screen.',
+        actionLabel: 'How to install',
+        manual: true,
+      });
+      return;
+    }
+    showBanner({
+      title: 'Install SongBinder',
+      text: 'Use your browser menu to install this app on your device.',
+      actionLabel: 'How to install',
+      manual: true,
+    });
+  }
+
+  function init() {
+    ui.action()?.addEventListener('click', () => {
+      handleInstallAction().catch((error) => {
+        console.warn('Install prompt failed', error);
+      });
+    });
+    ui.dismiss()?.addEventListener('click', () => {
+      dismissedForSession = true;
+      hideBanner();
+    });
+
+    window.addEventListener('beforeinstallprompt', (event) => {
+      event.preventDefault();
+      deferredPrompt = event;
+      showDefaultBanner();
+    });
+
+    window.addEventListener('appinstalled', () => {
+      deferredPrompt = null;
+      hideBanner();
+    });
+
+    if (!isInstalled()) {
+      window.setTimeout(() => {
+        if (!deferredPrompt && !dismissedForSession && !isInstalled()) {
+          showDefaultBanner();
+        }
+      }, 900);
+    }
+  }
+
+  return { init };
+})();
 
 const AuthGate = (() => {
   const ACCESS_MODE_KEY = 'songbinderAccessMode';
