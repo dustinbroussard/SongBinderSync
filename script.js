@@ -1861,14 +1861,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 const localToRemoteSetlistId = new Map(
                     remoteSetlists.map((setlist) => [String(setlist?.legacy_id || setlist?.id || '').trim(), String(setlist?.id || '').trim()]).filter(([localId, remoteId]) => localId && remoteId)
                 );
-                await Promise.all(localSetlists.map((setlist) => {
+                await Promise.all(localSetlists.map(async (setlist) => {
                     const remoteSetlistId = localToRemoteSetlistId.get(String(setlist.id || '').trim());
-                    const remoteSongIds = (setlist.songs || []).map((songId) => localToRemoteSongId.get(String(songId || '').trim())).filter(Boolean);
+                    const localSongIds = (setlist.songs || []).map((songId) => String(songId || '').trim()).filter(Boolean);
+                    const remoteSongIds = localSongIds.map((songId) => localToRemoteSongId.get(songId)).filter(Boolean);
                     if (!remoteSetlistId) {
                         console.warn('[SongSync] Missing remote setlist mapping for legacy_id', { localSetlistId: setlist.id });
-                        return Promise.resolve();
+                        throw new Error(`Cloud push could not map setlist "${setlist.name || 'Untitled Setlist'}" to a remote record.`);
                     }
-                    return window.SongBinderSupabase?.replaceSetlistSongsInSupabase?.(remoteSetlistId, remoteSongIds, user.id);
+                    if (localSongIds.length !== remoteSongIds.length) {
+                        const missingCount = localSongIds.length - remoteSongIds.length;
+                        console.warn('[SongSync] Missing remote song mappings for setlist membership push', {
+                            localSetlistId: setlist.id,
+                            missingCount,
+                            localSongIds,
+                            remoteSongIds,
+                        });
+                        throw new Error(`Cloud push could not map ${missingCount} song(s) in setlist "${setlist.name || 'Untitled Setlist'}" to remote song records.`);
+                    }
+                    const membershipResult = await window.SongBinderSupabase?.replaceSetlistSongsInSupabase?.(remoteSetlistId, remoteSongIds, user.id);
+                    if (membershipResult?.skipped) {
+                        throw new Error('Cloud setlist membership sync is unavailable because the setlist_songs table or required schema is missing.');
+                    }
+                    return membershipResult;
                 }));
 
                 console.info('[SongSync] Manual push end', {
