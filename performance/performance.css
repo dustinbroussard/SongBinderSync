@@ -9,7 +9,24 @@
     z-index: 1000;
     display: flex;
     flex-direction: column;
-    transition: background-color var(--transition-speed);
+    transition: opacity 180ms ease, transform 180ms ease, background-color var(--transition-speed);
+    animation: performance-surface-enter 180ms ease both;
+}
+
+body.page-transitioning .performance-mode-overlay {
+    opacity: 0;
+    transform: translateY(8px);
+}
+
+@keyframes performance-surface-enter {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .performance-header {

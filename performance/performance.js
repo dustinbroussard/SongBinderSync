@@ -71,6 +71,15 @@ function safeParseFromStorage(key, fallback) {
   }
 }
 
+const PAGE_TRANSITION_MS = 180;
+
+function navigateWithTransition(url) {
+    document.body?.classList.add('page-transitioning');
+    window.setTimeout(() => {
+        window.location.href = url;
+    }, PAGE_TRANSITION_MS);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // ==== TOASTS ====
     function showToast(message, type = 'success', timeout = 2500) {
@@ -877,7 +886,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (this.resizeObserver) {
                 this.resizeObserver.disconnect();
             }
-            window.location.href = '../index.html#performance';
+            navigateWithTransition('../index.html#performance');
         },
 
         // The rest: autoscroll, buttons, etc. are unchanged from your original

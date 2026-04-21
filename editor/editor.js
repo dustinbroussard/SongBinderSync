@@ -70,6 +70,15 @@ function safeParseFromStorage(key, fallback) {
     }
 }
 
+const PAGE_TRANSITION_MS = 180;
+
+function navigateWithTransition(url) {
+    document.body?.classList.add('page-transitioning');
+    window.setTimeout(() => {
+        window.location.href = url;
+    }, PAGE_TRANSITION_MS);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // Ensure touch devices trigger button actions
     document.addEventListener('touchstart', (e) => {
@@ -2419,7 +2428,7 @@ function enforceAlternating(lines) {
                 }
             }
             if (this.resizeObserver) this.resizeObserver.disconnect();
-            window.location.href = '../index.html';
+            navigateWithTransition('../index.html');
         },
 
         scrollToTop() {
@@ -2618,11 +2627,12 @@ function enforceAlternating(lines) {
                 case 'Polish Lyrics':
                     promptText = `Polish the following lyrics for flow, rhyme, and clarity and suggest suitable chords. Return chords and lyrics on alternating lines with section labels in square brackets.\n${lyrics}`;
                     break;
-                case 'Rewrite in Different Style':
+                case 'Rewrite in Different Style': {
                     const styleInput = prompt('Rewrite in which style?');
                     if (!styleInput) return;
                     promptText = `Rewrite these lyrics in the style of ${styleInput} with chord suggestions. Return chords and lyrics on alternating lines with section labels in square brackets.\n${lyrics}`;
                     break;
+                }
                 case 'Continue Song':
                     promptText = `Continue the song after these lyrics, adding chord suggestions. Return chords and lyrics on alternating lines with section labels in square brackets.\n${lyrics}`;
                     append = true;

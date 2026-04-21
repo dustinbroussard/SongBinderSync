@@ -98,6 +98,13 @@ body {
     box-sizing: border-box; /* Include padding and border in the element's total width and height */
 }
 
+body.page-transitioning .surface-shell:not([hidden]),
+body.page-transitioning .landing-screen:not([hidden]),
+body.page-transitioning .main-box:not([hidden]) {
+    opacity: 0;
+    transform: translateY(8px);
+}
+
 /* Accessibility helpers */
 .skip-link {
   position: absolute;
@@ -1046,6 +1053,36 @@ img, video, iframe {
   justify-content: flex-start;
 }
 
+#export-modal,
+#import-modal {
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+#export-modal .modal-content,
+#import-modal .modal-content {
+  transform: translateY(8px);
+  opacity: 0.98;
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease,
+    background-color var(--transition-speed),
+    border-color var(--transition-speed),
+    box-shadow var(--transition-speed);
+  animation: none;
+}
+
+#export-modal.is-visible,
+#import-modal.is-visible {
+  opacity: 1;
+}
+
+#export-modal.is-visible .modal-content,
+#import-modal.is-visible .modal-content {
+  transform: translateY(0);
+  opacity: 1;
+}
+
 #export-cloud-note,
 #import-cloud-note {
   margin: 0;
@@ -1057,11 +1094,85 @@ img, video, iframe {
   cursor: not-allowed;
 }
 
+#export-cloud-btn.is-loading,
+#import-cloud-btn.is-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.btn-spinner {
+  width: 0.82rem;
+  height: 0.82rem;
+  border: 2px solid rgba(0, 255, 255, 0.22);
+  border-top-color: var(--accent-color, #00ffff);
+  border-radius: 50%;
+  animation: cloud-action-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
 .modal-sync-status {
   margin: 0;
   font-size: 0.82rem;
   color: var(--text-muted, var(--text-secondary));
   opacity: 0.82;
+  transition: opacity 0.22s ease, color 0.22s ease;
+}
+
+.modal-sync-status.is-success {
+  color: var(--success-color, #62f5c0);
+  opacity: 1;
+}
+
+.modal-sync-status.is-error {
+  color: var(--danger-color, #ff7a90);
+  opacity: 1;
+}
+
+.modal-sync-status.is-fading {
+  opacity: 0;
+}
+
+.global-busy-indicator {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.global-busy-indicator.is-visible {
+  opacity: 1;
+}
+
+.global-busy-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.global-busy-pill {
+  position: absolute;
+  top: max(1rem, env(safe-area-inset-top, 0px) + 0.75rem);
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+  color: var(--text-primary);
+  box-shadow: 0 0 18px rgba(67, 240, 255, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+@keyframes cloud-action-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 #import-file-input {
@@ -2061,6 +2172,78 @@ button:focus, .btn:focus, [role="tab"]:focus {
 
 .landing-screen[hidden] {
   display: none;
+}
+
+.surface-shell:not([hidden]) {
+  animation: surface-enter 180ms ease both;
+}
+
+body.auth-resolving #landing-screen,
+body.auth-resolving #app-shell {
+  visibility: hidden;
+}
+
+.startup-splash {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(circle at top, rgba(255,255,255,0.08), transparent 42%),
+    linear-gradient(180deg, var(--bg-primary), var(--bg-secondary));
+  z-index: 1200;
+  transition: opacity 180ms ease, visibility 180ms ease;
+}
+
+.startup-splash[hidden] {
+  display: none;
+}
+
+.startup-splash-card {
+  display: grid;
+  justify-items: center;
+  gap: 0.9rem;
+  text-align: center;
+}
+
+.startup-splash-logo {
+  width: min(240px, 58vw);
+  max-height: 88px;
+}
+
+.startup-splash-spinner,
+.global-busy-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border: 2px solid rgba(255,255,255,0.18);
+  border-top-color: var(--info, #00ffff);
+  border-radius: 50%;
+  animation: ui-spin 0.8s linear infinite;
+}
+
+.startup-splash-text {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.94rem;
+  letter-spacing: 0.03em;
+}
+
+@keyframes surface-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .landing-card {

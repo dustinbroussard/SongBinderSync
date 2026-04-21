@@ -118,6 +118,27 @@
 /* ========================================
     Base & Global Styles
     ======================================== */
+body.page-transitioning .editor-mode-overlay {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.editor-mode-overlay {
+  transition: opacity 180ms ease, transform 180ms ease, background-color var(--transition-speed);
+  animation: editor-surface-enter 180ms ease both;
+}
+
+@keyframes editor-surface-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     background-color: var(--bg-primary);

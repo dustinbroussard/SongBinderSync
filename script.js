@@ -132,15 +132,67 @@ function safeParseFromStorage(key, fallback) {
   }
 }
 
+const UI_TRANSITION_MS = 180;
+
+function navigateWithTransition(url) {
+  document.body?.classList.add('page-transitioning');
+  window.setTimeout(() => {
+    window.location.href = url;
+  }, UI_TRANSITION_MS);
+}
+
+function showAnimatedModal(modal) {
+  if (!modal) return;
+  clearTimeout(modal.__hideTimer);
+  modal.style.display = 'flex';
+  modal.classList.remove('is-closing');
+  requestAnimationFrame(() => {
+    modal.classList.add('is-visible');
+  });
+}
+
+function hideAnimatedModal(modal) {
+  if (!modal) return;
+  modal.classList.remove('is-visible');
+  modal.classList.add('is-closing');
+  clearTimeout(modal.__hideTimer);
+  modal.__hideTimer = window.setTimeout(() => {
+    if (modal.classList.contains('is-visible')) return;
+    modal.style.display = 'none';
+    modal.classList.remove('is-closing');
+  }, UI_TRANSITION_MS);
+}
+
+function setGlobalBusyIndicator(isVisible, message = 'Syncing with cloud...') {
+  const indicator = document.getElementById('global-busy-indicator');
+  const text = document.getElementById('global-busy-text');
+  if (!indicator) return;
+  clearTimeout(indicator.__hideTimer);
+  if (text) text.textContent = message;
+  if (isVisible) {
+    indicator.hidden = false;
+    requestAnimationFrame(() => {
+      indicator.classList.add('is-visible');
+    });
+    return;
+  }
+  indicator.classList.remove('is-visible');
+  indicator.__hideTimer = window.setTimeout(() => {
+    if (indicator.classList.contains('is-visible')) return;
+    indicator.hidden = true;
+  }, UI_TRANSITION_MS);
+}
+
 const AuthGate = (() => {
   const ACCESS_MODE_KEY = 'songbinderAccessMode';
   let client = null;
   let appRef = null;
   let started = false;
   let currentSession = null;
-  let initialStateResolved = false;
+  let isAuthReady = false;
 
   const ui = {
+    splash: () => document.getElementById('startup-splash'),
     landing: () => document.getElementById('landing-screen'),
     appShell: () => document.getElementById('app-shell'),
     signInBtn: () => document.getElementById('google-signin-btn'),
@@ -181,6 +233,13 @@ const AuthGate = (() => {
 
   function setSession(session) {
     currentSession = session || null;
+  }
+
+  function setAuthReady(ready) {
+    isAuthReady = !!ready;
+    const splash = ui.splash();
+    document.body?.classList.toggle('auth-resolving', !ready);
+    if (splash) splash.hidden = !!ready;
   }
 
   function setLoading(isLoading) {
@@ -225,6 +284,7 @@ const AuthGate = (() => {
 
   async function startApp(mode, session = null) {
     setSession(session);
+    setAuthReady(true);
     if (started) {
       updateSessionPill(mode, session);
       return;
@@ -241,6 +301,7 @@ const AuthGate = (() => {
   }
 
   function showLanding(message, type = 'info') {
+    setAuthReady(true);
     const landing = ui.landing();
     const shell = ui.appShell();
     if (shell) shell.hidden = true;
@@ -285,6 +346,7 @@ const AuthGate = (() => {
 
   async function bootstrap(app) {
     appRef = app;
+    setAuthReady(false);
     ui.signInBtn()?.addEventListener('click', () => {
       signInWithGoogle();
     });
@@ -304,7 +366,8 @@ const AuthGate = (() => {
 
     const supabaseClient = ensureClient();
     supabaseClient.auth.onAuthStateChange((_event, session) => {
-      if (!initialStateResolved && !session) {
+      if (!isAuthReady) {
+        setSession(session);
         return;
       }
       setSession(session);
@@ -326,24 +389,20 @@ const AuthGate = (() => {
       if (data?.session) {
         setSession(data.session);
         setStoredMode('authenticated');
-        initialStateResolved = true;
         await startApp('authenticated', data.session);
         return;
       }
     } catch (err) {
       console.error('Session bootstrap failed', err);
-      initialStateResolved = true;
       showLanding('Sign-in is unavailable right now. You can still continue offline.', 'error');
       return;
     }
 
     if (getStoredMode() === 'offline') {
-      initialStateResolved = true;
       await startApp('offline');
       return;
     }
 
-    initialStateResolved = true;
     showLanding('Sign in with Google or continue offline on this device.');
   }
 
@@ -878,7 +937,7 @@ const SetlistsManager = (() => {
                 return JSON.stringify({ setlist, songs }, null, 2);
             case 'txt':
                 return songs.map(song => song.title).join('\n');
-            case 'csv':
+            case 'csv': {
                 const header = 'Title,Lyrics\n';
                 const rows = songs.map(song => {
                     const t = String(song.title || '').replace(/"/g, '""');
@@ -886,6 +945,7 @@ const SetlistsManager = (() => {
                     return `"${t}","${l}"`;
                 }).join('\n');
                 return header + rows;
+            }
             default:
                 return null;
         }
@@ -1140,7 +1200,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('import-setlist-image')?.addEventListener('change', (e) => this.handleImportSetlistImage(e));
                 document.getElementById('export-setlist-btn').addEventListener('click', () => {
                     const m = document.getElementById('export-modal');
-                    if (m) m.style.display = 'flex';
+                    showAnimatedModal(m);
                     this.updateCloudActionState();
                     this.updateExportFormatOptions();
                 });
@@ -1656,6 +1716,63 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         },
 
+        getCloudActionUi(action) {
+            if (action === 'push') {
+                return {
+                    button: document.getElementById('export-cloud-btn'),
+                    status: document.getElementById('export-sync-status'),
+                    idleLabel: 'Push to Cloud',
+                    loadingLabel: 'Pushing...',
+                };
+            }
+            if (action === 'pull') {
+                return {
+                    button: document.getElementById('import-cloud-btn'),
+                    status: document.getElementById('import-sync-status'),
+                    idleLabel: 'Pull from Cloud',
+                    loadingLabel: 'Pulling...',
+                };
+            }
+            return null;
+        },
+
+        setCloudActionLoading(action, isLoading) {
+            const ui = this.getCloudActionUi(action);
+            if (!ui?.button) return;
+
+            ui.button.disabled = isLoading;
+            ui.button.classList.toggle('is-loading', isLoading);
+            ui.button.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+            ui.button.innerHTML = isLoading
+                ? `<span class="btn-spinner" aria-hidden="true"></span><span>${ui.loadingLabel}</span>`
+                : ui.idleLabel;
+            setGlobalBusyIndicator(isLoading, 'Syncing with cloud...');
+        },
+
+        showCloudActionFeedback(action, message, type = 'success', duration = 2400) {
+            const ui = this.getCloudActionUi(action);
+            if (!ui?.status) return;
+
+            this.cloudActionFeedbackTimers = this.cloudActionFeedbackTimers || {};
+            const existingTimer = this.cloudActionFeedbackTimers[action];
+            if (existingTimer) {
+                clearTimeout(existingTimer);
+            }
+
+            ui.status.textContent = message;
+            ui.status.classList.remove('is-success', 'is-error', 'is-fading');
+            ui.status.classList.add(type === 'error' ? 'is-error' : 'is-success');
+
+            this.cloudActionFeedbackTimers[action] = setTimeout(() => {
+                ui.status.classList.add('is-fading');
+                this.cloudActionFeedbackTimers[action] = setTimeout(() => {
+                    ui.status.classList.remove('is-success', 'is-error', 'is-fading');
+                    this.updateSyncStatusText();
+                    this.cloudActionFeedbackTimers[action] = null;
+                }, 220);
+            }, duration);
+        },
+
         async pullFromCloud() {
             const user = AuthGate.getUser();
             if (!user?.id) throw new Error('Sign in with Google before pulling from the cloud.');
@@ -1819,18 +1936,25 @@ document.addEventListener('DOMContentLoaded', () => {
             // Export modal controls
             const exportModal = document.getElementById('export-modal');
             if (exportModal) {
-                exportModal.addEventListener('click', (e)=>{ if (e.target === exportModal) exportModal.style.display='none'; });
-                document.getElementById('export-cancel-btn')?.addEventListener('click', ()=> exportModal.style.display='none');
+                exportModal.addEventListener('click', (e)=>{ if (e.target === exportModal) hideAnimatedModal(exportModal); });
+                document.getElementById('export-cancel-btn')?.addEventListener('click', ()=> hideAnimatedModal(exportModal));
                 document.querySelectorAll('input[name="export-what"]').forEach(r=> r.addEventListener('change', ()=> this.updateExportFormatOptions()));
                 document.getElementById('export-download-btn')?.addEventListener('click', ()=> this.handleExportDownload());
                 document.getElementById('export-cloud-btn')?.addEventListener('click', async ()=> {
+                    const button = document.getElementById('export-cloud-btn');
+                    if (button?.disabled) return;
+                    this.setCloudActionLoading('push', true);
                     try {
                         const result = await this.pushToCloud();
                         localStorage.setItem('songbinderLastPushedAt', new Date().toISOString());
                         this.updateSyncStatusText();
+                        this.showCloudActionFeedback('push', 'Push complete', 'success');
                         showToast(`Pushed ${result.songsPushed} song(s) and ${result.setlistsPushed} setlist(s) to the cloud.`, 'success', 4500);
                     } catch (error) {
+                        this.showCloudActionFeedback('push', error?.message || 'Cloud push failed.', 'error');
                         showToast(error?.message || 'Cloud push failed.', 'error', 4500);
+                    } finally {
+                        this.setCloudActionLoading('push', false);
                     }
                 });
                 const reminderToggle = document.getElementById('backup-reminder-toggle');
@@ -1847,17 +1971,24 @@ document.addEventListener('DOMContentLoaded', () => {
             // Import modal controls
             const importModal = document.getElementById('import-modal');
             if (importModal) {
-                importModal.addEventListener('click', (e)=>{ if (e.target === importModal) importModal.style.display='none'; });
-                document.getElementById('import-cancel-btn')?.addEventListener('click', ()=> importModal.style.display='none');
+                importModal.addEventListener('click', (e)=>{ if (e.target === importModal) hideAnimatedModal(importModal); });
+                document.getElementById('import-cancel-btn')?.addEventListener('click', ()=> hideAnimatedModal(importModal));
                 document.getElementById('import-run-btn')?.addEventListener('click', ()=> this.handleImportRun());
                 document.getElementById('import-cloud-btn')?.addEventListener('click', async ()=> {
+                    const button = document.getElementById('import-cloud-btn');
+                    if (button?.disabled) return;
+                    this.setCloudActionLoading('pull', true);
                     try {
                         const result = await this.pullFromCloud();
                         localStorage.setItem('songbinderLastPulledAt', new Date().toISOString());
                         this.updateSyncStatusText();
+                        this.showCloudActionFeedback('pull', 'Pull complete', 'success');
                         showToast(`Pulled ${result.songsPulled} song(s) and ${result.setlistsPulled} setlist(s) from the cloud.`, 'success', 4500);
                     } catch (error) {
+                        this.showCloudActionFeedback('pull', error?.message || 'Cloud pull failed.', 'error');
                         showToast(error?.message || 'Cloud pull failed.', 'error', 4500);
+                    } finally {
+                        this.setCloudActionLoading('pull', false);
                     }
                 });
                 document.querySelectorAll('input[name="import-type"]').forEach(r=> r.addEventListener('change', ()=> this.updateImportOptionsVisibility()));
@@ -1882,7 +2013,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const m = document.getElementById('export-modal');
                     if (m) {
                         e.preventDefault();
-                        m.style.display = 'flex';
+                        showAnimatedModal(m);
                         this.updateCloudActionState();
                         this.updateExportFormatOptions();
                     }
@@ -1943,7 +2074,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
             }
             modal.querySelector('#edit-quick').onclick = () => { close(); this.openSongModal(id); };
-            modal.querySelector('#edit-full').onclick = () => { close(); window.location.href = `editor/editor.html?songId=${encodeURIComponent(id)}`; };
+            modal.querySelector('#edit-full').onclick = () => { close(); navigateWithTransition(`editor/editor.html?songId=${encodeURIComponent(id)}`); };
             const favBtn = modal.querySelector('#toggle-favorite');
             if (favBtn) {
                 favBtn.onclick = async () => {
@@ -2068,7 +2199,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (isFullBackup) this.recordFullBackupExport();
                 const countMsg = exportedSongsCount ? ` (${exportedSongsCount} song(s))` : '';
                 showToast(`Export ready${countMsg}.`, 'success');
-                const m = document.getElementById('export-modal'); if (m) m.style.display='none';
+                const m = document.getElementById('export-modal'); if (m) hideAnimatedModal(m);
             } catch (e) {
                 console.error(e); showToast('Export failed.', 'error');
             }
@@ -2195,7 +2326,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (radio) radio.checked = true;
             this.updateCloudActionState();
             this.updateImportOptionsVisibility();
-            modal.style.display = 'flex';
+            showAnimatedModal(modal);
         },
 
         // Export songs as separate .txt files (bundled into a ZIP)
@@ -2473,7 +2604,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         showToast(`Restore complete (${delta} song(s) imported).`, 'success');
                     }
                 }
-                const m = document.getElementById('import-modal'); if (m) m.style.display='none';
+                const m = document.getElementById('import-modal'); if (m) hideAnimatedModal(m);
                 filesInput.value = '';
             } catch (e) {
                 console.error(e);
@@ -2610,8 +2741,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     } else if (parsed && typeof parsed === 'object') {
                         if (Array.isArray(parsed.songs)) {
-                            songsToAdd = parsed.songs;
-                        } else if (parsed.setlist && Array.isArray(parsed.songs)) {
                             songsToAdd = parsed.songs;
                         }
                     }
@@ -2757,7 +2886,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             const song = { id, title: 'New Song', lyrics: '' };
                             await DB.putSong(song);
                             this.songs = await DB.getAllSongs();
-                            window.location.href = `editor/editor.html?songId=${encodeURIComponent(id)}`;
+                            navigateWithTransition(`editor/editor.html?songId=${encodeURIComponent(id)}`);
                         } catch (e) { console.error('Failed to create new song', e); }
                     });
                 }
@@ -3344,7 +3473,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             params.set('songId', songId);
-            window.location.href = `performance/performance.html?${params.toString()}`;
+            navigateWithTransition(`performance/performance.html?${params.toString()}`);
         },
 
  // Helper for downloading a file

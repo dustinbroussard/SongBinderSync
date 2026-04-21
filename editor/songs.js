@@ -497,7 +497,7 @@ async function importSongs(file) {
             byId.set(id, song);
         }
         const merged = Array.from(byId.values());
-        try { await window.EditorDB?.putSongs?.(merged); } catch (e) { throw e; }
+        await window.EditorDB?.putSongs?.(merged);
         try { window.StorageSafe?.snapshotLater?.('editor:import'); } catch {}
         return merged;
     } catch (e) {

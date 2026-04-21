@@ -1,8 +1,0 @@
-lib/
-assets/
-**/*.min.js
-**/*.min.css
-**/tesseract/**
-node_modules/
-dist/
-

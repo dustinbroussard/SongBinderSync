@@ -22,9 +22,16 @@
     <script src="lib/supabase.js" defer></script>
     <script src="supabase-client.js" defer></script>
 </head>
-<body>
+<body class="auth-resolving">
 <a href="#app" class="skip-link">Skip to content</a>
-<section id="landing-screen" class="landing-screen" aria-labelledby="landing-title" hidden>
+<section id="startup-splash" class="startup-splash" aria-live="polite">
+    <div class="startup-splash-card">
+        <img src="assets/images/logo-dark.png" alt="" class="startup-splash-logo" loading="eager" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
+        <div class="startup-splash-spinner" aria-hidden="true"></div>
+        <p class="startup-splash-text">Loading SongBinder...</p>
+    </div>
+</section>
+<section id="landing-screen" class="landing-screen surface-shell" aria-labelledby="landing-title" hidden>
     <div class="landing-card">
         <div class="landing-brand">
             <img src="assets/images/logo-dark.png" alt="SongBinder logo" class="landing-logo" loading="eager" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
@@ -44,7 +51,7 @@
         <p id="auth-feedback" class="landing-feedback" role="status" aria-live="polite">Your songs and setlists stay stored in this browser unless you choose to sign in.</p>
     </div>
 </section>
-<div id="app-shell" class="main-box" hidden>
+<div id="app-shell" class="main-box surface-shell" hidden>
  <header class="app-header">
   <div class="header-top">
     <div class="header-brand">
@@ -199,6 +206,13 @@
           <button id="import-cloud-btn" class="btn" type="button">Pull from Cloud</button>
           <button id="import-cancel-btn" class="btn">Cancel</button>
         </div>
+      </div>
+    </div>
+    <div id="global-busy-indicator" class="global-busy-indicator" aria-live="polite" hidden>
+      <div class="global-busy-backdrop" aria-hidden="true"></div>
+      <div class="global-busy-pill">
+        <span class="global-busy-spinner" aria-hidden="true"></span>
+        <span id="global-busy-text">Syncing with cloud...</span>
       </div>
     </div>
     </div>
