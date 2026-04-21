@@ -140,11 +140,21 @@
     console.info('[SongSync] Setlists fetch row keys', Object.keys(result.data?.[0] || {}));
 
     let linkRows = [];
+    const remoteSetlistIds = (result.data || [])
+      .map((setlist) => String(setlist?.id || '').trim())
+      .filter(Boolean);
     try {
-      const linkResult = await supabaseClient
+      let linkResult = await supabaseClient
         .from('setlist_songs')
         .select('setlist_id,song_id,position')
         .eq('user_id', userId);
+      if (!linkResult.error && (!linkResult.data || !linkResult.data.length) && remoteSetlistIds.length) {
+        console.info('[SongSync] setlist_songs user_id lookup returned no rows; retrying by setlist_id.');
+        linkResult = await supabaseClient
+          .from('setlist_songs')
+          .select('setlist_id,song_id,position')
+          .in('setlist_id', remoteSetlistIds);
+      }
       if (linkResult.error) throw linkResult.error;
       console.info('[SongSync] setlist_songs fetch row keys', Object.keys(linkResult.data?.[0] || {}));
       linkRows = (linkResult.data || []).slice().sort((a, b) => {
