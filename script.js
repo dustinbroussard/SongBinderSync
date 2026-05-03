@@ -1219,7 +1219,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="toolbar-buttons-group">
                     <button id="new-setlist-btn" class="btn" title="New Setlist"><i class="fas fa-plus"></i></button>
                     <button id="edit-setlist-btn" class="btn" title="Edit Setlist"><i class="fas fa-pen-to-square"></i></button>
-                    <button id="import-export-btn" class="btn" title="Import/Export"><i class="fas fa-file-arrow-up-down"></i></button>
+                    <button id="import-export-btn" class="btn" title="Import/Export"><i class="fas fa-file-upload"></i></button>
                 </div>
                 <input type="file" id="import-setlist-image" accept="image/*" class="hidden-file">
             `,

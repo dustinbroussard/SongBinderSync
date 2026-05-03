@@ -54,19 +54,20 @@
 <div id="app-shell" class="main-box surface-shell" hidden>
  <header class="app-header">
   <div class="header-top">
-    <div class="header-brand">
+  <div class="header-left-controls">
+    <button id="logout-btn" class="icon-btn logout-btn" title="Sign out" hidden><i class="fas fa-sign-out-alt"></i></button>
+  </div>
+  <div class="header-brand">
       <div class="app-logo">
         <img src="assets/images/logo-dark.png" alt="App Logo" class="app-logo-img main-logo-img" loading="lazy" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
       </div>
-    </div>
-  <div class="header-controls">
-    <button id="logout-btn" class="icon-btn logout-btn" title="Sign out" hidden><i class="fas fa-sign-out-alt"></i></button>
+  </div>
+  <div class="header-right-controls">
     <button id="theme-toggle-btn" class="icon-btn theme-toggle-btn" title="Toggle Light/Dark">
-      <i class="fas fa-circle-half-stroke"></i>
+      <i class="fas fa-swatchbook"></i>
     </button>
   </div>
-   
-  </div>
+</div>
   <nav class="app-nav" aria-label="Main tabs" role="tablist">
     <button type="button" class="nav-button active" role="tab" aria-selected="true" tabindex="0" data-tab="songs" aria-controls="songs" aria-label="Songs tab">
       <i class="fas fa-book"></i> Songs
