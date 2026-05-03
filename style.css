@@ -2119,6 +2119,34 @@ html, body {
   color: var(--accent-primary, #fff);
   opacity: 1;
 }
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  grid-column: 3;
+  justify-self: end;
+}
+
+.logout-btn {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: var(--accent-secondary, #aaa);
+  cursor: pointer;
+  opacity: 0.85;
+  transition: color 0.22s, opacity 0.15s, transform 0.15s;
+}
+
+.logout-btn:hover, .logout-btn:focus {
+  color: var(--danger, #ef4444);
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+.logout-btn:active {
+  transform: scale(0.96);
+}
+
 .header-top .theme-toggle-btn,
 .header-top .theme-toggle-wrapper {
   grid-column: 3;

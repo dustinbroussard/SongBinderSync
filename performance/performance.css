@@ -217,7 +217,7 @@ body.page-transitioning .performance-mode-overlay {
 
 .lyrics-container .section-label {
     font-weight: 600;
-    margin: 0.4em 0 0.2em;
+    margin: 1.2em 0 0.4em;
 }
 
 .nav-arrow {
@@ -301,7 +301,7 @@ body.page-transitioning .performance-mode-overlay {
 }
 
 .scroll-to-top-btn {
-    bottom: 120px;
+    bottom: 210px;
 }
 
 .auto-scroll-btn {
@@ -352,7 +352,7 @@ body.page-transitioning .performance-mode-overlay {
     width: 100vw;
     height: 100vh;
     background: rgba(0,0,0,0.82);
-   -cast-align-items: center;
+    align-items: center;
     justify-content: center;
 }
 
@@ -467,8 +467,8 @@ body.page-transitioning .performance-mode-overlay {
       transition: background 0.22s, opacity 0.14s, color 0.14s;
     }
     .scroll-to-top-btn {
-      bottom: 100px;
-    } 
+      bottom: 200px;
+    }
 
     .auto-scroll-btn {
       bottom: 150px;
@@ -544,10 +544,6 @@ body.page-transitioning .performance-mode-overlay {
 }
 
 /* Corner nav visual buttons (Performance) */
-70% { opacity: 1; transform: scale(1.02); }
-  100% { opacity: 0.95; transform: scale(1); }
-}
-
 .auto-scroll-btn {
     display: flex !important;
 }

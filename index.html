@@ -58,11 +58,13 @@
       <div class="app-logo">
         <img src="assets/images/logo-dark.png" alt="App Logo" class="app-logo-img main-logo-img" loading="lazy" data-logo-light="assets/images/logo-light.png" data-logo-dark="assets/images/logo-dark.png">
       </div>
-      <div id="auth-session-pill" class="auth-session-pill" hidden></div>
     </div>
-  <button id="theme-toggle-btn" class="icon-btn theme-toggle-btn" title="Toggle Light/Dark">
-  <i class="fas fa-adjust"></i>
-</button>
+  <div class="header-controls">
+    <button id="logout-btn" class="icon-btn logout-btn" title="Sign out" hidden><i class="fas fa-sign-out-alt"></i></button>
+    <button id="theme-toggle-btn" class="icon-btn theme-toggle-btn" title="Toggle Light/Dark">
+      <i class="fas fa-circle-half-stroke"></i>
+    </button>
+  </div>
    
   </div>
   <nav class="app-nav" aria-label="Main tabs" role="tablist">
@@ -130,6 +132,20 @@
         </div>
     </div>
 
+    <div id="edit-setlist-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-setlist-modal-title">
+        <div class="modal-content">
+            <h2 id="edit-setlist-modal-title">Edit Setlist</h2>
+            <div class="modal-section">
+                <button id="rename-setlist-action-btn" class="btn" style="width:100%;margin-bottom:0.5rem"><i class="fas fa-pen"></i> Rename</button>
+                <button id="duplicate-setlist-action-btn" class="btn" style="width:100%;margin-bottom:0.5rem"><i class="fas fa-copy"></i> Duplicate</button>
+                <button id="delete-setlist-action-btn" class="btn danger" style="width:100%"><i class="fas fa-trash"></i> Delete</button>
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-edit-setlist-btn" class="btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Export Modal -->
     <div id="export-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
       <div class="modal-content">
@@ -183,6 +199,7 @@
             <label><input type="radio" name="import-type" value="setlist"> Import Setlist</label>
             <label><input type="radio" name="import-type" value="restore"> Restore (JSON backup)</label>
             <label><input type="radio" name="import-type" value="legacy-supabase"> Legacy Backup to Supabase</label>
+            <label><input type="radio" name="import-type" value="ocr"> Import from Image (OCR)</label>
           </div>
         </div>
         <div class="modal-section" id="import-options">
@@ -196,6 +213,7 @@
         </div>
         <div class="modal-section">
           <input type="file" id="import-file-input" multiple>
+          <input type="file" id="import-ocr-input" accept="image/*" hidden>
         </div>
         <div class="modal-section modal-cloud-section">
           <p id="import-cloud-note" class="storage-note">Sign in to pull songs and setlists from the cloud into this device.</p>
@@ -203,6 +221,7 @@
         </div>
         <div class="modal-actions">
           <button id="import-run-btn" class="btn primary">Import</button>
+          <button id="import-export-switch-btn" class="btn" type="button">Export</button>
           <button id="import-cloud-btn" class="btn" type="button">Pull from Cloud</button>
           <button id="import-cancel-btn" class="btn">Cancel</button>
         </div>

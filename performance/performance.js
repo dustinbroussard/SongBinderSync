@@ -206,6 +206,7 @@ document.addEventListener('DOMContentLoaded', () => {
         autoscrollSpeedSlider: document.getElementById('autoscroll-speed-slider'),
         autoscrollSpeedValue: document.getElementById('autoscroll-speed-value'),
         tapFeedbackSelect: document.getElementById('tap-feedback-select'),
+        alignmentSelect: document.getElementById('alignment-select'),
         closeAutoscrollDelayModal: document.getElementById('close-autoscroll-delay-modal'),
 
         // State
@@ -236,6 +237,7 @@ document.addEventListener('DOMContentLoaded', () => {
         isChordsVisible: (localStorage.getItem('performanceShowChords') === '1'),
         explicitSongSelection: false,
         tapFeedbackMode: localStorage.getItem('tapFeedbackMode') || 'none',
+        alignment: localStorage.getItem('performanceAlignment') || 'center',
         audioCtx: null,
         isFontPanelOpen: false,
 
@@ -434,6 +436,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (this.tapFeedbackSelect) {
                     this.tapFeedbackSelect.value = this.tapFeedbackMode || 'none';
                 }
+                if (this.alignmentSelect) {
+                    this.alignmentSelect.value = this.alignment || 'center';
+                }
                 const chordToggle = document.getElementById('show-chords-toggle');
                 if (chordToggle) chordToggle.checked = !!this.isChordsVisible;
             });
@@ -453,6 +458,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (this.tapFeedbackSelect) {
                     this.tapFeedbackMode = this.tapFeedbackSelect.value || 'none';
                     localStorage.setItem('tapFeedbackMode', this.tapFeedbackMode);
+                }
+                if (this.alignmentSelect) {
+                    this.alignment = this.alignmentSelect.value || 'center';
+                    localStorage.setItem('performanceAlignment', this.alignment);
+                    this.applyAlignment();
                 }
                 const chordToggle = document.getElementById('show-chords-toggle');
                 if (chordToggle) {
@@ -715,6 +725,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         },
 
+        applyAlignment() {
+            if (!this.lyricsDisplay) return;
+            this.lyricsDisplay.style.textAlign = this.alignment || 'center';
+        },
+
         // Display current song
         displayCurrentPerformanceSong(direction = 0) {
             const song = this.performanceSongs[this.currentPerformanceSongIndex];
@@ -781,6 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
             spacer.className = 'lyrics-tail-spacer';
             spacer.setAttribute('aria-hidden', 'true');
             renderTarget.appendChild(spacer);
+            this.applyAlignment();
             this.applySlideTransition(direction);
 
             // Restore per-song font size if present, else use last-used or default

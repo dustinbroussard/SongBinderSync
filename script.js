@@ -344,7 +344,7 @@ const AuthGate = (() => {
     signInBtn: () => document.getElementById('google-signin-btn'),
     offlineBtn: () => document.getElementById('continue-offline-btn'),
     feedback: () => document.getElementById('auth-feedback'),
-    sessionPill: () => document.getElementById('auth-session-pill'),
+    logoutBtn: () => document.getElementById('logout-btn'),
   };
 
   function isSupabaseConfigured() {
@@ -395,23 +395,15 @@ const AuthGate = (() => {
     if (offlineBtn) offlineBtn.disabled = !!isLoading;
   }
 
-  function updateSessionPill(mode, session) {
-    const pill = ui.sessionPill();
-    if (!pill) return;
+  function updateLogoutButton(mode, session) {
+    const logoutBtn = ui.logoutBtn();
+    if (!logoutBtn) return;
     if (mode !== 'authenticated' || !session?.user) {
-      pill.hidden = true;
-      pill.innerHTML = '';
+      logoutBtn.hidden = true;
       return;
     }
-    const label = escapeHTML(session.user.email || 'Signed in');
-    pill.innerHTML = `
-      <span class="auth-session-label">${label}</span>
-      <button type="button" class="btn auth-signout-btn" title="Sign out" aria-label="Sign out">
-        <i class="fas fa-sign-out-alt" aria-hidden="true"></i>
-      </button>
-    `;
-    pill.hidden = false;
-    pill.querySelector('.auth-signout-btn')?.addEventListener('click', async () => {
+    logoutBtn.hidden = false;
+    logoutBtn.addEventListener('click', async () => {
       if (!client) return;
       setLoading(true);
       try {
@@ -432,11 +424,11 @@ const AuthGate = (() => {
     setSession(session);
     setAuthReady(true);
     if (started) {
-      updateSessionPill(mode, session);
+      updateLogoutButton(mode, session);
       return;
     }
     started = true;
-    updateSessionPill(mode, session);
+    updateLogoutButton(mode, session);
     const landing = ui.landing();
     const shell = ui.appShell();
     if (landing) landing.hidden = true;
@@ -448,12 +440,12 @@ const AuthGate = (() => {
 
   function showLanding(message, type = 'info') {
     setAuthReady(true);
+    updateLogoutButton('', null);
     const landing = ui.landing();
     const shell = ui.appShell();
     if (shell) shell.hidden = true;
     if (landing) landing.hidden = false;
     setFeedback(message, type);
-    updateSessionPill('', null);
   }
 
   function ensureClient() {
@@ -1216,10 +1208,9 @@ document.addEventListener('DOMContentLoaded', () => {
                       <input type="checkbox" id="song-fav-filter" ${localStorage.getItem('songsFavoritesOnly')==='1' ? 'checked' : ''} aria-label="Show favorites only">
                       <span><i class="fas fa-star"></i></span>
                     </label>
-                    <button id="legacy-import-btn" class="btn" title="Import legacy backup to Supabase"><i class="fas fa-file-import"></i></button>
                     <label for="song-upload-input" class="btn" title="Upload"><i class="fas fa-upload"></i></label>
-                    <button id="delete-all-songs-btn" class="btn danger" title="Delete All"><i class="fas fa-trash"></i></button>
                     <button id="add-song-btn" class="btn" title="Add Song"><i class="fas fa-plus"></i></button>
+                    <button id="delete-all-songs-btn" class="btn danger" title="Delete All"><i class="fas fa-trash"></i></button>
                 </div>
                 <input type="file" id="song-upload-input" multiple accept=".txt,.docx,.json,.csv" class="hidden-file">
             `,
@@ -1227,12 +1218,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <select id="setlist-select" class="setlist-select"></select>
                 <div class="toolbar-buttons-group">
                     <button id="new-setlist-btn" class="btn" title="New Setlist"><i class="fas fa-plus"></i></button>
-                    <button id="rename-setlist-btn" class="btn" title="Rename"><i class="fas fa-pen"></i></button>
-                    <button id="duplicate-setlist-btn" class="btn" title="Duplicate"><i class="fas fa-copy"></i></button>
-                    <button id="delete-setlist-btn" class="btn danger" title="Delete"><i class="fas fa-trash"></i></button>
-                    <button id="import-setlist-btn" class="btn" title="Import"><i class="fas fa-file-import"></i></button>
-                    <button id="import-setlist-image-btn" class="btn" title="Import from Image (OCR)"><i class="fas fa-image"></i></button>
-                    <button id="export-setlist-btn" class="btn" title="Export"><i class="fas fa-file-export"></i></button>
+                    <button id="edit-setlist-btn" class="btn" title="Edit Setlist"><i class="fas fa-pen-to-square"></i></button>
+                    <button id="import-export-btn" class="btn" title="Import/Export"><i class="fas fa-file-arrow-up-down"></i></button>
                 </div>
                 <input type="file" id="import-setlist-image" accept="image/*" class="hidden-file">
             `,
@@ -1307,7 +1294,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         this.renderSongs();
                     });
                 }
-                document.getElementById('legacy-import-btn')?.addEventListener('click', () => this.openImportModal('legacy-supabase'));
                 this.addSongBtn.addEventListener('click', () => this.openSongModal());
                 this.deleteAllSongsBtn.addEventListener('click', () => {
                     confirmDialog('Delete ALL songs? This cannot be undone!', async () => {
@@ -1333,23 +1319,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.deleteSetlistBtn = document.getElementById('delete-setlist-btn');
                 this.setlistSelect.addEventListener('change', (e) => this.handleSetlistSelectChange(e));
                 this.newSetlistBtn.addEventListener('click', () => this.openSetlistModal());
-                this.renameSetlistBtn.addEventListener('click', () => this.openSetlistModal('rename'));
-                this.duplicateSetlistBtn.addEventListener('click', () => this.handleDuplicateSetlist());
-                this.deleteSetlistBtn.addEventListener('click', () => this.handleDeleteSetlist());
-                document.getElementById('import-setlist-btn').addEventListener('click', () => {
-                    this.openImportModal('setlist');
+                document.getElementById('edit-setlist-btn').addEventListener('click', () => this.openEditSetlistModal());
+                document.getElementById('import-export-btn').addEventListener('click', () => this.openImportExportModal());
+                // Edit setlist modal actions
+                document.getElementById('rename-setlist-action-btn').addEventListener('click', () => {
+                    this.closeEditSetlistModal();
+                    this.openSetlistModal('rename');
                 });
-                // OCR image import triggers hidden input
-                document.getElementById('import-setlist-image-btn')?.addEventListener('click', () => {
-                    document.getElementById('import-setlist-image')?.click();
+                document.getElementById('duplicate-setlist-action-btn').addEventListener('click', () => {
+                    this.closeEditSetlistModal();
+                    this.handleDuplicateSetlist();
                 });
-                document.getElementById('import-setlist-image')?.addEventListener('change', (e) => this.handleImportSetlistImage(e));
-                document.getElementById('export-setlist-btn').addEventListener('click', () => {
-                    const m = document.getElementById('export-modal');
-                    showAnimatedModal(m);
-                    this.updateCloudActionState();
-                    this.updateExportFormatOptions();
+                document.getElementById('delete-setlist-action-btn').addEventListener('click', () => {
+                    this.closeEditSetlistModal();
+                    this.handleDeleteSetlist();
                 });
+                document.getElementById('cancel-edit-setlist-btn').addEventListener('click', () => this.closeEditSetlistModal());
             } else if (tab === 'performance') {
                 this.performanceSetlistSelect = document.getElementById('performance-setlist-select');
                 this.performanceSongSearch = document.getElementById('performance-song-search');
@@ -2488,6 +2473,52 @@ document.addEventListener('DOMContentLoaded', () => {
             this.updateCloudActionState();
             this.updateImportOptionsVisibility();
             showAnimatedModal(modal);
+        },
+
+        openEditSetlistModal() {
+            const modal = document.getElementById('edit-setlist-modal');
+            if (!modal) return;
+            showAnimatedModal(modal);
+        },
+
+        closeEditSetlistModal() {
+            const modal = document.getElementById('edit-setlist-modal');
+            if (!modal) return;
+            hideAnimatedModal(modal);
+        },
+
+        openImportExportModal() {
+            // Show a simple choice modal
+            const choiceModal = document.createElement('div');
+            choiceModal.className = 'modal';
+            choiceModal.style.display = 'flex';
+            choiceModal.innerHTML = `
+                <div class="modal-content">
+                    <h2>Import or Export</h2>
+                    <div class="modal-section">
+                        <button id="choice-import-btn" class="btn" style="width:100%;margin-bottom:0.5rem"><i class="fas fa-file-import"></i> Import</button>
+                        <button id="choice-export-btn" class="btn" style="width:100%"><i class="fas fa-file-export"></i> Export</button>
+                    </div>
+                    <div class="modal-actions">
+                        <button id="choice-cancel-btn" class="btn">Cancel</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(choiceModal);
+            choiceModal.querySelector('#choice-import-btn').addEventListener('click', () => {
+                choiceModal.remove();
+                this.openImportModal('setlist');
+            });
+            choiceModal.querySelector('#choice-export-btn').addEventListener('click', () => {
+                choiceModal.remove();
+                const m = document.getElementById('export-modal');
+                showAnimatedModal(m);
+                this.updateCloudActionState();
+                this.updateExportFormatOptions();
+            });
+            choiceModal.querySelector('#choice-cancel-btn').addEventListener('click', () => {
+                choiceModal.remove();
+            });
         },
 
         // Export songs as separate .txt files (bundled into a ZIP)
