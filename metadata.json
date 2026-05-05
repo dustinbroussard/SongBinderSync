@@ -1,0 +1,9 @@
+{
+  "name": "Remix: SongBinder 2.0",
+  "description": "A digital gig bag to manage songs, setlists, and perform on stage.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
