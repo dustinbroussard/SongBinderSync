@@ -223,6 +223,8 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
     try {
       const remoteSongs = await fetchSongsForUser(user.id);
+      const supabaseIdToLegacyId = new Map<string, string>();
+      
       for (const remoteSong of remoteSongs as any[]) {
         const existingSong = await db.songs.get(remoteSong.legacy_id);
         if (!existingSong) {
@@ -235,16 +237,23 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
             metadata: {}
           });
         }
+        // Map Supabase song ID to legacy ID
+        supabaseIdToLegacyId.set(String(remoteSong.id), String(remoteSong.legacy_id));
       }
 
       const remoteSetlists = await fetchSetlistsForUser(user.id);
       for (const remoteSetlist of remoteSetlists as any[]) {
         const existingSetlist = await db.setlists.get(remoteSetlist.legacy_id);
         if (!existingSetlist) {
+          // Convert Supabase song IDs to legacy IDs
+          const legacySongIds = (remoteSetlist.songs || [])
+            .map((songId: string) => supabaseIdToLegacyId.get(String(songId)))
+            .filter(Boolean) as string[];
+          
           await db.setlists.put({
             id: remoteSetlist.legacy_id,
             name: remoteSetlist.name,
-            songIds: remoteSetlist.songs || [],
+            songIds: legacySongIds,
             createdAt: new Date(remoteSetlist.created_at).getTime(),
             updatedAt: new Date(remoteSetlist.updated_at).getTime()
           });

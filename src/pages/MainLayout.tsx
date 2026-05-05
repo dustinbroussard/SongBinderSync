@@ -12,6 +12,7 @@ export default function MainLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [showSettings, setShowSettings] = useState(false);
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const { theme, setTheme } = useTheme();
   const { user, signOut } = useAuth();
 
@@ -19,8 +20,13 @@ export default function MainLayout() {
   const isSetlists = location.pathname.startsWith("/setlists");
 
   const handleSignOut = async () => {
+    setShowSignOutConfirm(true);
+  };
+
+  const confirmSignOut = async () => {
     await signOut();
     navigate('/signin');
+    setShowSignOutConfirm(false);
   };
 
   return (
@@ -147,6 +153,41 @@ export default function MainLayout() {
       <AnimatePresence>
         {showSettings && (
           <SettingsModal onClose={() => setShowSettings(false)} />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showSignOutConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black bg-opacity-80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-bg-secondary border border-border p-6 rounded-xl w-full max-w-sm shadow-2xl"
+            >
+              <h3 className="text-lg font-bold font-mono-tech mb-2">Sign Out</h3>
+              <p className="text-sm text-gray-400 mb-6">Are you sure you want to sign out?</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowSignOutConfirm(false)}
+                  className="flex-1 px-4 py-2 rounded-lg border border-border text-gray-400 hover:text-white hover:border-gray-500 transition-all-custom"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmSignOut}
+                  className="flex-1 px-4 py-2 rounded-lg bg-danger text-white font-medium hover:bg-opacity-90 transition-all-custom"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
