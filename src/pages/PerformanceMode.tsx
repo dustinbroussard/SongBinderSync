@@ -447,10 +447,13 @@ export default function PerformanceMode() {
     
     const scroll = (time: number) => {
       const deltaTime = time - lastTime;
-      if (deltaTime > 16) { 
+      if (deltaTime > 16) {
         const element = contentRef.current;
         if (element) {
-          element.scrollTop += Math.max(0, Math.pow(scrollSpeed, 1.5) * 0.02) * (deltaTime / 16);
+          // Linear formula: speed 1 = 0, speed 2+ = gradual increase
+          // speed 2: 0.5, speed 3: 1.0, speed 4: 1.5, speed 5: 2.0, etc.
+          const scrollAmount = scrollSpeed > 1 ? (scrollSpeed - 1) * 0.5 : 0;
+          element.scrollTop += scrollAmount * (deltaTime / 16);
         }
         lastTime = time;
       }
