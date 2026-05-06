@@ -450,9 +450,8 @@ export default function PerformanceMode() {
       if (deltaTime > 16) {
         const element = contentRef.current;
         if (element) {
-          // Linear formula: speed 1 = 0, speed 2+ = gradual increase
-          // speed 2: 0.5, speed 3: 1.0, speed 4: 1.5, speed 5: 2.0, etc.
-          const scrollAmount = scrollSpeed > 1 ? (scrollSpeed - 1) * 0.5 : 0;
+          // Refined formula: 10x slower multiplier (0.05) to allow for very slow scrolling
+          const scrollAmount = scrollSpeed > 1 ? (scrollSpeed - 1) * 0.05 : 0;
           element.scrollTop += scrollAmount * (deltaTime / 16);
         }
         lastTime = time;
@@ -942,7 +941,7 @@ export default function PerformanceMode() {
                     <label className="text-[10px] font-black uppercase text-gray-500 tracking-wider">Scroll Speed</label>
                     <div className="flex items-center gap-4 bg-bg-tertiary p-3 rounded-xl border border-border">
                       <input 
-                        type="range" min="1" max="15" step="0.1" 
+                        type="range" min="1" max="20" step="0.1" 
                         value={scrollSpeed} 
                         onChange={(e) => handleScrollSpeedChange(Number(e.target.value))} 
                         className="flex-1 accent-primary-accent"
