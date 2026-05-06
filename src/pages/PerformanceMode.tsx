@@ -942,12 +942,12 @@ export default function PerformanceMode() {
                     <label className="text-[10px] font-black uppercase text-gray-500 tracking-wider">Scroll Speed</label>
                     <div className="flex items-center gap-4 bg-bg-tertiary p-3 rounded-xl border border-border">
                       <input 
-                        type="range" min="1" max="25" step="1" 
+                        type="range" min="1" max="15" step="0.1" 
                         value={scrollSpeed} 
                         onChange={(e) => handleScrollSpeedChange(Number(e.target.value))} 
                         className="flex-1 accent-primary-accent"
                       />
-                      <span className="text-xs font-bold text-white min-w-[20px]">{scrollSpeed}</span>
+                      <span className="text-xs font-bold text-white min-w-[30px] text-right">{scrollSpeed.toFixed(1)}</span>
                     </div>
                   </div>
                 </div>
