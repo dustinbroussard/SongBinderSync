@@ -696,8 +696,8 @@ export default function PerformanceMode() {
                           style={{ 
                             fontSize: `${fontSize}px`, 
                             textAlign: textAlign,
-                            marginTop: isSectionStr ? `${sectionSpacing * 2}rem` : '0',
-                            marginBottom: isSectionStr ? `${sectionSpacing * 0.25}rem` : '0',
+                            marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
+                            marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
                             lineHeight: isSectionStr ? '1.2' : lineHeight
                           }}
                         >
@@ -736,8 +736,8 @@ export default function PerformanceMode() {
                           style={{ 
                             fontSize: `${fontSize}px`, 
                             textAlign: textAlign,
-                            marginTop: isSectionStr ? `${sectionSpacing * 2}rem` : '0',
-                            marginBottom: isSectionStr ? `${sectionSpacing * 0.25}rem` : '0',
+                            marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
+                            marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
                             lineHeight: isSectionStr ? '1.2' : lineHeight
                           }}
                         >
@@ -777,8 +777,8 @@ export default function PerformanceMode() {
                           style={{ 
                             fontSize: `${fontSize}px`, 
                             textAlign: textAlign,
-                            marginTop: isSectionStr ? `${sectionSpacing * 2}rem` : '0',
-                            marginBottom: isSectionStr ? `${sectionSpacing * 0.25}rem` : '0',
+                            marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
+                            marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
                             lineHeight: isSectionStr ? '1.2' : lineHeight
                           }}
                         >
