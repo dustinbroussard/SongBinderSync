@@ -186,17 +186,25 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       await upsertProfile(user);
 
       const songs = await db.songs.toArray();
+      const legacySongIdToSupabaseId = new Map<string, string>();
       for (const song of songs) {
-        await upsertSongToSupabase(song, user.id);
+        const remoteSong = await upsertSongToSupabase(song, user.id);
+        if (remoteSong?.id) {
+          legacySongIdToSupabaseId.set(String(song.id), String(remoteSong.id));
+        }
       }
 
       const setlists = await db.setlists.toArray();
       for (const setlist of setlists) {
         const remoteSetlist = await upsertSetlistToSupabase(setlist, user.id);
-        if (remoteSetlist && remoteSetlist[0]?.id) {
+        if (remoteSetlist?.id) {
+          const remoteSongIds = (setlist.songIds || [])
+            .map(songId => legacySongIdToSupabaseId.get(String(songId)))
+            .filter(Boolean) as string[];
+
           await replaceSetlistSongsInSupabase(
-            setlist.id,
-            setlist.songIds || [],
+            remoteSetlist.id,
+            remoteSongIds,
             user.id
           );
         }
@@ -224,40 +232,44 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     try {
       const remoteSongs = await fetchSongsForUser(user.id);
       const supabaseIdToLegacyId = new Map<string, string>();
+      const knownLegacySongIds = new Set<string>();
       
       for (const remoteSong of remoteSongs as any[]) {
         const existingSong = await db.songs.get(remoteSong.legacy_id);
-        if (!existingSong) {
-          await db.songs.put({
-            id: remoteSong.legacy_id,
-            title: remoteSong.title,
-            lyrics: remoteSong.lyrics,
-            createdAt: new Date(remoteSong.created_at).getTime(),
-            updatedAt: new Date(remoteSong.updated_at).getTime(),
-            metadata: {}
-          });
-        }
+        const legacySongId = String(remoteSong.legacy_id);
+        await db.songs.put({
+          id: legacySongId,
+          title: remoteSong.title,
+          lyrics: remoteSong.lyrics,
+          createdAt: existingSong?.createdAt || new Date(remoteSong.created_at).getTime(),
+          updatedAt: new Date(remoteSong.updated_at).getTime(),
+          metadata: existingSong?.metadata || {}
+        });
         // Map Supabase song ID to legacy ID
-        supabaseIdToLegacyId.set(String(remoteSong.id), String(remoteSong.legacy_id));
+        supabaseIdToLegacyId.set(String(remoteSong.id), legacySongId);
+        knownLegacySongIds.add(legacySongId);
       }
 
       const remoteSetlists = await fetchSetlistsForUser(user.id);
       for (const remoteSetlist of remoteSetlists as any[]) {
         const existingSetlist = await db.setlists.get(remoteSetlist.legacy_id);
-        if (!existingSetlist) {
-          // Convert Supabase song IDs to legacy IDs
-          const legacySongIds = (remoteSetlist.songs || [])
-            .map((songId: string) => supabaseIdToLegacyId.get(String(songId)))
-            .filter(Boolean) as string[];
-          
-          await db.setlists.put({
-            id: remoteSetlist.legacy_id,
-            name: remoteSetlist.name,
-            songIds: legacySongIds,
-            createdAt: new Date(remoteSetlist.created_at).getTime(),
-            updatedAt: new Date(remoteSetlist.updated_at).getTime()
-          });
-        }
+        // Convert Supabase song IDs to legacy IDs. Keep a direct legacy ID match
+        // as a fallback for older link rows that were synced before this fix.
+        const legacySongIds = (remoteSetlist.songs || [])
+          .map((songId: string) => {
+            const normalizedSongId = String(songId);
+            return supabaseIdToLegacyId.get(normalizedSongId) || normalizedSongId;
+          })
+          .filter(songId => knownLegacySongIds.has(songId))
+          .filter(Boolean) as string[];
+        
+        await db.setlists.put({
+          id: remoteSetlist.legacy_id,
+          name: remoteSetlist.name,
+          songIds: legacySongIds,
+          createdAt: existingSetlist?.createdAt || new Date(remoteSetlist.created_at).getTime(),
+          updatedAt: new Date(remoteSetlist.updated_at).getTime()
+        });
       }
 
       setSyncStatus("Pull from cloud completed successfully!");

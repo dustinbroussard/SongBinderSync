@@ -79,9 +79,11 @@ export async function upsertSongToSupabase(song: any, userId: string) {
     lyrics: String(song.lyrics || ''),
   };
 
-  const result = await supabaseClient
+  const result = await (supabaseClient as any)
     .from('songs')
-    .upsert(payload, { onConflict: 'user_id,legacy_id' });
+    .upsert(payload, { onConflict: 'user_id,legacy_id' })
+    .select('id,user_id,title,lyrics,created_at,updated_at,legacy_id')
+    .single();
   
   if (result.error) {
     console.error('[SongSync] Song upsert error', result.error);
@@ -119,9 +121,11 @@ export async function upsertSetlistToSupabase(setlist: any, userId: string) {
     name: String(setlist.name || '').trim(),
   };
 
-  const result = await supabaseClient
+  const result = await (supabaseClient as any)
     .from('setlists')
-    .upsert(payload, { onConflict: 'user_id,legacy_id' });
+    .upsert(payload, { onConflict: 'user_id,legacy_id' })
+    .select('id,user_id,name,created_at,updated_at,legacy_id')
+    .single();
   
   if (result.error) {
     console.error('[SongSync] Setlist upsert error', result.error);
@@ -199,7 +203,7 @@ export async function replaceSetlistSongsInSupabase(setlistId: string, remoteSon
   if (!userId) throw new Error('User id is required for setlist song sync.');
 
   try {
-    const { error: deleteError } = await supabaseClient
+    const { error: deleteError } = await (supabaseClient as any)
       .from('setlist_songs')
       .delete()
       .eq('user_id', userId)
@@ -217,7 +221,7 @@ export async function replaceSetlistSongsInSupabase(setlistId: string, remoteSon
       position: index + 1,
     }));
 
-    const { error: insertError } = await supabaseClient
+    const { error: insertError } = await (supabaseClient as any)
       .from('setlist_songs')
       .insert(rows);
     
@@ -241,7 +245,7 @@ export async function upsertProfile(user: any) {
     id: String(user.id).trim(),
   };
 
-  const { error } = await supabaseClient
+  const { error } = await (supabaseClient as any)
     .from('profiles')
     .upsert(payload, { onConflict: 'id' });
   
