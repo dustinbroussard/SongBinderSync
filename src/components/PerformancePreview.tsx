@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { cn } from "../lib/utils";
 import type { Song } from "../types";
+import { Music } from "lucide-react";
+import { cleanLineOfNotes, parsePerformanceNotesBySection } from "../lib/normalization";
 
 interface PerformancePreviewProps {
   song: Partial<Song>;
@@ -80,9 +82,28 @@ export default function PerformancePreview({ song, theme = 'dark' }: Performance
   const sectionSpacing = global.sectionSpacing;
   const isBold = global.isBold;
 
+  const showPerformanceNotesSetting = useMemo(() => {
+    try {
+      const saved = localStorage.getItem('songbinder_show_performance_notes');
+      return saved === 'true';
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const cleanLyricsLines = useMemo(() => {
+    if (!song.lyrics) return [];
+    return song.lyrics.split('\n').map(line => cleanLineOfNotes(line));
+  }, [song.lyrics]);
+
+  const sectionNotesList = useMemo(() => {
+    return parsePerformanceNotesBySection(song.lyrics || "");
+  }, [song.lyrics]);
+
   const firstLyricalSection = useMemo(() => {
-    if (!song.lyrics) return null;
-    const parts = (song.lyrics || '').split(/(\[.*?\])/);
+    if (cleanLyricsLines.length === 0) return null;
+    // Split lyrics by section headers [Section]
+    const parts = cleanLyricsLines.join('\n').split(/(\[.*?\])/);
     
     for (let i = 1; i < parts.length; i += 2) {
       const header = parts[i].trim();
@@ -99,7 +120,7 @@ export default function PerformancePreview({ song, theme = 'dark' }: Performance
       if (hasActualLyrics) return header;
     }
     return null;
-  }, [song.lyrics]);
+  }, [cleanLyricsLines]);
 
   return (
     <div className={cn(
@@ -113,11 +134,47 @@ export default function PerformancePreview({ song, theme = 'dark' }: Performance
           theme === 'dark' ? "text-white" : "text-black"
         )}
       >
-        {(song.metadata?.performanceNotes || song.metadata?.productionNotes) && (
-          <div className="mb-8 p-4 bg-primary-accent/5 border border-primary-accent/10 rounded-2xl max-w-xl mx-auto text-center">
-            <p className="text-xs text-primary-accent/70 font-medium italic">
-              "{song.metadata.performanceNotes || song.metadata.productionNotes}"
-            </p>
+        {showPerformanceNotesSetting && (song.metadata?.performanceNotes || song.metadata?.productionNotes || sectionNotesList.length > 0) && (
+          <div className="mb-8 p-6 bg-bg-secondary/40 backdrop-blur-md border border-white/5 rounded-3xl max-w-xl mx-auto text-left shadow-soft">
+            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-white/5">
+              <Music className="w-4 h-4 text-primary-accent animate-pulse" />
+              <span className="text-[10px] font-black uppercase tracking-[0.25em] text-white">Performance Map</span>
+            </div>
+
+            {(song.metadata?.performanceNotes || song.metadata?.productionNotes) && (
+              <div className="mb-4 p-3.5 bg-white/5 rounded-xl border-l-4 border-primary-accent text-left">
+                <h4 className="text-[9px] font-black uppercase tracking-wider text-gray-400 mb-1">General Notes</h4>
+                <p className="text-xs text-gray-300 font-medium leading-relaxed italic">
+                  "{song.metadata.performanceNotes || song.metadata.productionNotes}"
+                </p>
+              </div>
+            )}
+
+            {sectionNotesList.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-[9px] font-black uppercase tracking-wider text-gray-500 mb-2">Arrangement & Section Notes</h4>
+                <div className="space-y-1.5">
+                  {sectionNotesList.map((sec, idx) => (
+                    <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between p-2 hover:bg-white/5 rounded-lg transition-all duration-200 gap-1 border border-transparent hover:border-white/5">
+                      <span className="text-[9px] font-black uppercase tracking-widest text-primary-accent bg-primary-accent/10 px-2 py-0.5 rounded w-fit shrink-0 font-mono-tech border border-primary-accent/20">
+                        {sec.sectionName}
+                      </span>
+                      <div className="flex flex-wrap gap-1 justify-end">
+                        {sec.notes.length > 0 ? (
+                          sec.notes.map((note, nIdx) => (
+                            <span key={nIdx} className="text-[11px] text-gray-300 bg-bg-tertiary/80 border border-border px-2 py-0.5 rounded font-medium">
+                              {note}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-[9px] text-gray-600 uppercase tracking-widest font-bold">No notes</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -125,7 +182,7 @@ export default function PerformancePreview({ song, theme = 'dark' }: Performance
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <div className="space-y-0.5">
               <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-4 border-b border-border pb-2">Lyrics Left</h4>
-              {(song.lyrics || '').split('\n').filter((_, i) => i % 2 === 0).map((line, i) => {
+              {cleanLyricsLines.filter((_, i) => i % 2 === 0).map((line, i) => {
                  const cleanedLabel = cleanSectionLabel(line);
                  const isSectionStr = cleanedLabel !== null;
                  return (
@@ -157,7 +214,7 @@ export default function PerformancePreview({ song, theme = 'dark' }: Performance
             </div>
             <div className="space-y-0.5">
               <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-4 border-b border-border pb-2">Lyrics Right</h4>
-              {(song.lyrics || '').split('\n').filter((_, i) => i % 2 !== 0).map((line, i) => {
+              {cleanLyricsLines.filter((_, i) => i % 2 !== 0).map((line, i) => {
                  const cleanedLabel = cleanSectionLabel(line);
                  const isSectionStr = cleanedLabel !== null;
                  return (
@@ -189,12 +246,11 @@ export default function PerformancePreview({ song, theme = 'dark' }: Performance
             </div>
           </div>
         ) : (
-          (song.lyrics || '').split('\n').map((lLine, i) => {
+          cleanLyricsLines.map((lLine, i) => {
             const cleanedLabel = cleanSectionLabel(lLine);
             const isSectionStr = cleanedLabel !== null;
             const isRawBracketed = lLine.trim().startsWith('[') && lLine.trim().endsWith(']');
-            const lyricsLines = (song.lyrics || '').split('\n');
-            const firstLyricalIdx = firstLyricalSection ? lyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
+            const firstLyricalIdx = firstLyricalSection ? cleanLyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
             const shouldHideNote = isRawBracketed && !isSectionStr && firstLyricalIdx !== -1 && i < firstLyricalIdx;
 
             return (

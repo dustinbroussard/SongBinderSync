@@ -67,20 +67,36 @@ export function normalizeSectionLabels(text: string): string {
   
   const sectionKeywords = [
     "intro", "verse", "prechorus", "pre-chorus", "chorus", "bridge", 
-    "instrumental", "refrain", "reprise", "outro"
+    "instrumental", "refrain", "reprise", "outro", "end"
   ];
-  const keywordRegex = new RegExp(`^\\W*(${sectionKeywords.join('|')})\\b(?:\\s+([0-9]+|[a-zA-Z])\\b)?`, 'i');
+  const regex = /^(\[?)\s*(intro|verse|prechorus|pre-chorus|chorus|bridge|instrumental|refrain|reprise|outro|end)\b(?:\s+([0-9]+|[a-zA-Z])\b)?\s*(:|\])?/i;
 
   return text.split('\n').map(line => {
     const trimmed = line.trim();
-    if (trimmed.length > 0 && trimmed.length < 50) {
-      const match = trimmed.match(keywordRegex);
+    if (trimmed.length > 0 && trimmed.length < 120) {
+      const match = trimmed.match(regex);
       if (match) {
-        let keyword = match[1].toLowerCase();
+        let keyword = match[2].toLowerCase();
         if (keyword === 'prechorus') keyword = 'pre-chorus';
         keyword = keyword.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('-');
-        const identifier = match[2] ? ` ${match[2].toUpperCase()}` : '';
-        return `[${keyword}${identifier}]`;
+        const identifier = match[3] ? ` ${match[3].toUpperCase()}` : '';
+        const normalizedLabel = `[${keyword}${identifier}]`;
+        
+        const remaining = trimmed.substring(match[0].length).trim();
+        let cleanRemaining = remaining;
+        
+        if (match[4] === ':') {
+          if (cleanRemaining.endsWith(']')) {
+            cleanRemaining = cleanRemaining.slice(0, -1).trim();
+          }
+          return `${normalizedLabel} [${cleanRemaining}]`;
+        }
+        
+        if (cleanRemaining) {
+          return `${normalizedLabel} ${cleanRemaining}`;
+        } else {
+          return normalizedLabel;
+        }
       }
     }
     return line;
@@ -97,7 +113,7 @@ export function extractPerformanceNotes(text: string): { cleanedText: string; pe
 
   const sectionKeywords = [
     "intro", "verse", "prechorus", "pre-chorus", "chorus", "bridge", 
-    "instrumental", "refrain", "reprise", "outro"
+    "instrumental", "refrain", "reprise", "outro", "end"
   ];
   const keywordRegex = new RegExp(`^\\W*(${sectionKeywords.join('|')})\\b(?:\\s+([0-9]+|[a-zA-Z])\\b)?`, 'i');
 
@@ -105,24 +121,15 @@ export function extractPerformanceNotes(text: string): { cleanedText: string; pe
   const lines = text.split('\n');
   const cleanedLines = lines.map(line => {
     let currentLine = line;
-    // Find all [...] blocks
     const bracketRegex = /\[(.*?)\]/g;
-    let match;
     
-    // We iterate backwards to replace without affecting indices, 
-    // or just use replace with a function.
     currentLine = currentLine.replace(bracketRegex, (fullMatch, content) => {
-      // Check if this fullMatch (e.g. "[Verse 1]") looks like a section label
-      // To be a section label, it should typically be the whole line or start with a keyword.
-      // But here we are looking at a block within a line.
-      
       const isSection = keywordRegex.test(content.trim());
-      
       if (isSection) {
-        return fullMatch; // Keep it
+        return fullMatch;
       } else {
         notes.push(content.trim());
-        return ""; // Remove it
+        return "";
       }
     });
 
@@ -133,4 +140,137 @@ export function extractPerformanceNotes(text: string): { cleanedText: string; pe
     cleanedText: cleanedLines.join('\n').replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim(),
     performanceNotes: notes.length > 0 ? notes.join('; ') : null
   };
+}
+
+export function cleanLineOfNotes(line: string): string {
+  if (!line) return line;
+  
+  const sectionKeywords = [
+    "intro", "verse", "prechorus", "pre-chorus", "chorus", "bridge", 
+    "instrumental", "refrain", "reprise", "outro", "end"
+  ];
+  
+  const isSectionKeyword = (str: string) => {
+    const trimmed = str.trim();
+    return sectionKeywords.some(keyword => {
+      const regex = new RegExp(`^${keyword}\\b(?:\\s+([0-9]+|[a-zA-Z])\\b)?`, 'i');
+      return regex.test(trimmed);
+    });
+  };
+
+  const bracketRegex = /\[(.*?)\]/g;
+  
+  let cleaned = line.replace(bracketRegex, (fullMatch, content) => {
+    const trimmedContent = content.trim();
+    const colonIndex = trimmedContent.indexOf(':');
+    const possibleSection = colonIndex !== -1 ? trimmedContent.substring(0, colonIndex).trim() : trimmedContent;
+    
+    if (isSectionKeyword(possibleSection)) {
+      if (colonIndex !== -1) {
+        const sectionWords = possibleSection.toLowerCase().split(/\s+/);
+        const normalizedSectionWords = sectionWords.map(w => {
+          if (w === 'prechorus') return 'Pre-Chorus';
+          if (w === 'pre-chorus') return 'Pre-Chorus';
+          return w.charAt(0).toUpperCase() + w.slice(1);
+        });
+        return `[${normalizedSectionWords.join(' ')}]`;
+      }
+      return fullMatch;
+    } else {
+      return "";
+    }
+  });
+  
+  return cleaned.replace(/\s+/g, ' ').trim();
+}
+
+interface SectionNotes {
+  sectionName: string;
+  notes: string[];
+}
+
+export function parsePerformanceNotesBySection(lyrics: string): SectionNotes[] {
+  if (!lyrics) return [];
+
+  const sectionKeywords = [
+    "intro", "verse", "prechorus", "pre-chorus", "chorus", "bridge", 
+    "instrumental", "refrain", "reprise", "outro", "end"
+  ];
+  
+  const isSectionKeyword = (str: string) => {
+    const trimmed = str.trim();
+    return sectionKeywords.some(keyword => {
+      const regex = new RegExp(`^${keyword}\\b(?:\\s+([0-9]+|[a-zA-Z])\\b)?`, 'i');
+      return regex.test(trimmed);
+    });
+  };
+
+  const sectionsList: SectionNotes[] = [];
+  let currentSection: SectionNotes | null = null;
+  const lines = lyrics.split('\n');
+
+  lines.forEach(line => {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) return;
+
+    const bracketRegex = /\[(.*?)\]/g;
+    let match;
+    const lineNotes: string[] = [];
+    let lineHasSectionLabel = false;
+    let detectedSectionName = "";
+
+    const brackets: string[] = [];
+    while ((match = bracketRegex.exec(trimmedLine)) !== null) {
+      brackets.push(match[1]);
+    }
+
+    brackets.forEach(bracketContent => {
+      const content = bracketContent.trim();
+      if (!content) return;
+
+      const colonIndex = content.indexOf(':');
+      const possibleSectionPart = colonIndex !== -1 ? content.substring(0, colonIndex).trim() : content;
+
+      if (isSectionKeyword(possibleSectionPart)) {
+        lineHasSectionLabel = true;
+        const sectionWords = possibleSectionPart.toLowerCase().split(/\s+/);
+        const normalizedSectionWords = sectionWords.map(w => {
+          if (w === 'prechorus') return 'Pre-Chorus';
+          if (w === 'pre-chorus') return 'Pre-Chorus';
+          return w.charAt(0).toUpperCase() + w.slice(1);
+        });
+        detectedSectionName = `[${normalizedSectionWords.join(' ')}]`;
+
+        if (colonIndex !== -1) {
+          const notePart = content.substring(colonIndex + 1).trim();
+          if (notePart) {
+            lineNotes.push(notePart);
+          }
+        }
+      } else {
+        lineNotes.push(content);
+      }
+    });
+
+    if (lineHasSectionLabel) {
+      currentSection = {
+        sectionName: detectedSectionName,
+        notes: []
+      };
+      sectionsList.push(currentSection);
+    }
+
+    if (lineNotes.length > 0) {
+      if (!currentSection) {
+        currentSection = {
+          sectionName: "[General]",
+          notes: []
+        };
+        sectionsList.push(currentSection);
+      }
+      currentSection.notes.push(...lineNotes);
+    }
+  });
+
+  return sectionsList;
 }

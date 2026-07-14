@@ -121,35 +121,51 @@ export default function SongEditor() {
     if (!song) return;
     setIsSaving(true);
     
-    // Normalize content
-    let processedLyrics = normalizeSmartQuotes(lyrics);
-    const { cleanedText: lyricsWithoutNotes, performanceNotes: extractedNotes } = extractPerformanceNotes(processedLyrics);
-    processedLyrics = normalizeSectionLabels(normalizeLyricsBlock(lyricsWithoutNotes, title));
+    const lyricsToSave = lyrics;
+    const titleToSave = title;
+    const notesToSave = performanceNotes;
 
-    // Merge notes
-    let finalNotes = performanceNotes;
-    if (extractedNotes) {
-      const existingNotesList = performanceNotes.split(';').map(n => n.trim()).filter(Boolean);
-      const newNotesList = extractedNotes.split(';').map(n => n.trim()).filter(Boolean);
-      const mergedNotes = Array.from(new Set([...existingNotesList, ...newNotesList]));
-      finalNotes = mergedNotes.join('; ');
-    }
+    // Normalize content (retaining bracketed notes)
+    let processedLyrics = normalizeSmartQuotes(lyricsToSave);
+    processedLyrics = normalizeSectionLabels(normalizeLyricsBlock(processedLyrics, titleToSave));
 
     const updatedMetadata = {
       ...song.metadata,
-      performanceNotes: finalNotes
+      performanceNotes: notesToSave
     };
 
     await db.songs.update(song.id, {
-      title,
+      title: titleToSave,
       lyrics: processedLyrics,
       metadata: updatedMetadata,
       updatedAt: Date.now()
     });
     
-    // Ensure state reflects normalized version
-    if (lyrics !== processedLyrics) setLyrics(processedLyrics);
-    if (performanceNotes !== finalNotes) setPerformanceNotes(finalNotes);
+    // Safely update state without losing user input or cursor position
+    setLyrics(currentLyrics => {
+      if (currentLyrics !== lyricsToSave) {
+        // User typed something new during DB update; do not overwrite
+        return currentLyrics;
+      }
+      if (currentLyrics !== processedLyrics) {
+        const textarea = lyricsEditorRef.current;
+        const selectionStart = textarea ? textarea.selectionStart : null;
+        const selectionEnd = textarea ? textarea.selectionEnd : null;
+
+        if (textarea && selectionStart !== null && selectionEnd !== null) {
+          setTimeout(() => {
+            try {
+              textarea.focus();
+              textarea.setSelectionRange(selectionStart, selectionEnd);
+            } catch (e) {
+              console.error("Error restoring selection range:", e);
+            }
+          }, 0);
+        }
+        return processedLyrics;
+      }
+      return currentLyrics;
+    });
 
     setIsSaving(false);
     setShowStatus(true);

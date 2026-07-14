@@ -7,6 +7,7 @@ import type { Song } from "../types";
 import { cn } from "../lib/utils";
 import { useTheme } from "../components/ThemeProvider";
 import { motion, AnimatePresence } from "motion/react";
+import { cleanLineOfNotes, parsePerformanceNotesBySection } from "../lib/normalization";
 
 // Persistent Settings Management
 const GLOBAL_PERF_SETTINGS = 'songbinder_global_perf_v2';
@@ -68,6 +69,15 @@ export default function PerformanceMode() {
   const [lineHeight, setLineHeight] = useState(() => getGlobalSettings().lineHeight);
   const [sectionSpacing, setSectionSpacing] = useState(() => getGlobalSettings().sectionSpacing);
   const [isBold, setIsBold] = useState(() => getGlobalSettings().isBold);
+
+  const [showPerformanceNotesSetting, setShowPerformanceNotesSetting] = useState(() => {
+    try {
+      const saved = localStorage.getItem('songbinder_show_performance_notes');
+      return saved === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   // Metronome state (not song specific but persistent in app session)
   const [metronomeEnabled, setMetronomeEnabled] = useState(false);
@@ -354,15 +364,24 @@ export default function PerformanceMode() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isPlaying, currentSongIndex, playlist.length]);
 
-  const sections = useMemo(() => {
+  const cleanLyricsLines = useMemo(() => {
     if (!currentSong?.lyrics) return [];
-    return currentSong.lyrics.split('\n').filter(line => line.trim().startsWith('[') && line.trim().endsWith(']'));
-  }, [currentSong]);
+    return currentSong.lyrics.split('\n').map(line => cleanLineOfNotes(line));
+  }, [currentSong?.lyrics]);
+
+  const sectionNotesList = useMemo(() => {
+    return parsePerformanceNotesBySection(currentSong?.lyrics || "");
+  }, [currentSong?.lyrics]);
+
+  const sections = useMemo(() => {
+    if (cleanLyricsLines.length === 0) return [];
+    return cleanLyricsLines.filter(line => line.trim().startsWith('[') && line.trim().endsWith(']'));
+  }, [cleanLyricsLines]);
 
   const firstLyricalSection = useMemo(() => {
-    if (!currentSong?.lyrics) return null;
+    if (cleanLyricsLines.length === 0) return null;
     // Split lyrics by section headers [Section]
-    const parts = (currentSong.lyrics || '').split(/(\[.*?\])/);
+    const parts = cleanLyricsLines.join('\n').split(/(\[.*?\])/);
     
     for (let i = 1; i < parts.length; i += 2) {
       const header = parts[i].trim();
@@ -383,7 +402,7 @@ export default function PerformanceMode() {
       if (hasActualLyrics) return header;
     }
     return null;
-  }, [currentSong]);
+  }, [cleanLyricsLines]);
 
   const cleanSectionLabel = (label: string): string | null => {
     const trimmed = label.trim();
@@ -647,19 +666,51 @@ export default function PerformanceMode() {
             )}
           >
             {/* Performance Notes Prompt */}
-            {(currentSong.metadata?.performanceNotes || currentSong.metadata?.productionNotes) && (
+            {showPerformanceNotesSetting && (currentSong.metadata?.performanceNotes || currentSong.metadata?.productionNotes || sectionNotesList.length > 0) && (
               <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
+                initial={{ opacity: 0, scale: 0.98 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="mb-12 p-6 bg-primary-accent/5 border border-primary-accent/10 rounded-3xl max-w-2xl mx-auto text-center"
+                className="mb-12 p-6 md:p-8 bg-bg-secondary/40 backdrop-blur-md border border-white/5 rounded-3xl max-w-2xl mx-auto shadow-medium text-left"
               >
-                <div className="flex items-center justify-center gap-2 mb-3">
-                  <Sparkles className="w-4 h-4 text-primary-accent animate-pulse" />
-                  <span className="text-[11px] font-black uppercase tracking-[0.3em] text-primary-accent">Performance Notes</span>
+                <div className="flex items-center gap-2 mb-6 pb-4 border-b border-white/5">
+                  <Music className="w-4 h-4 text-primary-accent animate-pulse" />
+                  <span className="text-[10px] font-black uppercase tracking-[0.25em] text-white">Performance Map</span>
                 </div>
-                <p className="text-sm md:text-base text-gray-300 font-medium italic leading-relaxed">
-                  "{currentSong.metadata.performanceNotes || currentSong.metadata.productionNotes}"
-                </p>
+
+                {(currentSong.metadata?.performanceNotes || currentSong.metadata?.productionNotes) && (
+                  <div className="mb-6 p-4 bg-white/5 rounded-2xl border-l-4 border-primary-accent text-left">
+                    <h4 className="text-[9px] font-black uppercase tracking-wider text-gray-400 mb-1">General Notes</h4>
+                    <p className="text-xs md:text-sm text-gray-300 font-medium leading-relaxed italic">
+                      "{currentSong.metadata.performanceNotes || currentSong.metadata.productionNotes}"
+                    </p>
+                  </div>
+                )}
+
+                {sectionNotesList.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[9px] font-black uppercase tracking-wider text-gray-500 mb-2">Arrangement & Section Notes</h4>
+                    <div className="space-y-2">
+                      {sectionNotesList.map((sec, idx) => (
+                        <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 hover:bg-white/5 rounded-xl transition-all duration-200 gap-2 border border-transparent hover:border-white/5">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-primary-accent bg-primary-accent/10 px-3 py-1 rounded-lg w-fit shrink-0 font-mono-tech border border-primary-accent/25">
+                            {sec.sectionName}
+                          </span>
+                          <div className="flex flex-wrap gap-1.5 justify-end">
+                            {sec.notes.length > 0 ? (
+                              sec.notes.map((note, nIdx) => (
+                                <span key={nIdx} className="text-xs text-gray-300 bg-bg-tertiary/80 border border-border px-3 py-1 rounded-lg font-medium shadow-sm">
+                                  {note}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-[9px] text-gray-600 uppercase tracking-widest font-bold">No notes</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -669,126 +720,122 @@ export default function PerformanceMode() {
                   {/* Lyrics Column Left */}
                   <div className="space-y-0.5">
                     <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-6 border-b border-white/5 pb-2">Lyrics Left</h4>
-                    {(currentSong.lyrics || '').split('\n').filter((_, i) => i % 2 === 0).map((line, i) => {
-                       const cleanedLabel = cleanSectionLabel(line);
-                       const isSectionStr = cleanedLabel !== null;
-                       const isRawBracketed = line.trim().startsWith('[') && line.trim().endsWith(']');
-                       const lyricsLines = (currentSong.lyrics || '').split('\n');
-                       const firstLyricalIdx = firstLyricalSection ? lyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
-                       const shouldHideProductionNote = isRawBracketed && !isSectionStr && firstLyricalIdx !== -1 && i < firstLyricalIdx;
+                     {cleanLyricsLines.filter((_, i) => i % 2 === 0).map((line, i) => {
+                        const cleanedLabel = cleanSectionLabel(line);
+                        const isSectionStr = cleanedLabel !== null;
+                        const isRawBracketed = line.trim().startsWith('[') && line.trim().endsWith(']');
+                        const originalIdx = i * 2;
+                        const firstLyricalIdx = firstLyricalSection ? cleanLyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
+                        const shouldHideProductionNote = isRawBracketed && !isSectionStr && firstLyricalIdx !== -1 && originalIdx < firstLyricalIdx;
 
-                       return (
-                        <p 
-                          key={i}
-                          data-section={isSectionStr ? cleanedLabel : undefined}
-                          className={cn(
-                            "whitespace-pre-wrap leading-snug font-medium transition-colors min-h-[1.2em]",
-                            shouldHideProductionNote && "hidden",
-                            fontFamily === 'serif' ? 'font-serif' : fontFamily === 'mono' ? 'font-mono-tech' : 'font-sans',
-                            isBold && "font-bold",
-                            isSectionStr 
-                              ? cn(
-                                  "text-primary-accent font-black tracking-[0.25em] uppercase font-mono-tech pt-3 pb-1.5 bg-primary-accent/5",
-                                  textAlign === 'center' ? "rounded-xl px-4 inline-block" : "border-l-4 border-primary-accent/30 pl-4 rounded-r-xl block w-full"
-                                )
-                              : "text-white block w-full"
-                          )}
-                          style={{ 
-                            fontSize: `${fontSize}px`, 
-                            textAlign: textAlign,
-                            marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
-                            marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
-                            lineHeight: isSectionStr ? '1.2' : lineHeight
-                          }}
-                        >
-                          {isSectionStr ? cleanedLabel : line}
-                        </p>
-                       );
-                    })}
-                  </div>
-                  {/* Lyrics Column Right */}
-                  <div className="space-y-0.5">
-                    <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-6 border-b border-white/5 pb-2">Lyrics Right</h4>
-                    {(currentSong.lyrics || '').split('\n').filter((_, i) => i % 2 !== 0).map((line, i) => {
-                       const cleanedLabel = cleanSectionLabel(line);
-                       const isSectionStr = cleanedLabel !== null;
-                       const isRawBracketed = line.trim().startsWith('[') && line.trim().endsWith(']');
-                       const lyricsLines = (currentSong.lyrics || '').split('\n');
-                       const firstLyricalIdx = firstLyricalSection ? lyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
-                       const shouldHideProductionNote = isRawBracketed && !isSectionStr && firstLyricalIdx !== -1 && i < firstLyricalIdx;
+                        return (
+                         <p 
+                           key={i}
+                           data-section={isSectionStr ? cleanedLabel : undefined}
+                           className={cn(
+                             "whitespace-pre-wrap leading-snug font-medium transition-colors min-h-[1.2em]",
+                             shouldHideProductionNote && "hidden",
+                             fontFamily === 'serif' ? 'font-serif' : fontFamily === 'mono' ? 'font-mono-tech' : 'font-sans',
+                             isBold && "font-bold",
+                             isSectionStr 
+                               ? cn(
+                                   "text-primary-accent font-black tracking-[0.25em] uppercase font-mono-tech pt-3 pb-1.5 bg-primary-accent/5",
+                                   textAlign === 'center' ? "rounded-xl px-4 inline-block" : "border-l-4 border-primary-accent/30 pl-4 rounded-r-xl block w-full"
+                                 )
+                               : "text-white block w-full"
+                           )}
+                           style={{ 
+                             fontSize: `${fontSize}px`, 
+                             textAlign: textAlign,
+                             marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
+                             marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
+                             lineHeight: isSectionStr ? '1.2' : lineHeight
+                           }}
+                         >
+                           {isSectionStr ? cleanedLabel : line}
+                         </p>
+                        );
+                     })}
+                   </div>
+                   {/* Lyrics Column Right */}
+                   <div className="space-y-0.5">
+                     <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-6 border-b border-white/5 pb-2">Lyrics Right</h4>
+                     {cleanLyricsLines.filter((_, i) => i % 2 !== 0).map((line, i) => {
+                        const cleanedLabel = cleanSectionLabel(line);
+                        const isSectionStr = cleanedLabel !== null;
+                        const isRawBracketed = line.trim().startsWith('[') && line.trim().endsWith(']');
+                        const originalIdx = i * 2 + 1;
+                        const firstLyricalIdx = firstLyricalSection ? cleanLyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
+                        const shouldHideProductionNote = isRawBracketed && !isSectionStr && firstLyricalIdx !== -1 && originalIdx < firstLyricalIdx;
 
-                       return (
-                        <p 
-                          key={i}
-                          data-section={isSectionStr ? cleanedLabel : undefined}
-                          className={cn(
-                            "whitespace-pre-wrap leading-snug font-medium transition-colors min-h-[1.2em]",
-                            shouldHideProductionNote && "hidden",
-                            fontFamily === 'serif' ? 'font-serif' : fontFamily === 'mono' ? 'font-mono-tech' : 'font-sans',
-                            isBold && "font-bold",
-                            isSectionStr 
-                              ? cn(
-                                  "text-primary-accent font-black tracking-[0.25em] uppercase font-mono-tech pt-3 pb-1.5 bg-primary-accent/5",
-                                  textAlign === 'center' ? "rounded-xl px-4 inline-block" : "border-l-4 border-primary-accent/30 pl-4 rounded-r-xl block w-full"
-                                )
-                              : "text-white block w-full"
-                          )}
-                          style={{ 
-                            fontSize: `${fontSize}px`, 
-                            textAlign: textAlign,
-                            marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
-                            marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
-                            lineHeight: isSectionStr ? '1.2' : lineHeight
-                          }}
-                        >
-                          {isSectionStr ? cleanedLabel : line}
-                        </p>
-                       );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                (currentSong.lyrics || '').split('\n').map((lLine, i) => {
-                  const cleanedLabel = cleanSectionLabel(lLine);
-                  const isSectionStr = cleanedLabel !== null;
-                  const isRawBracketed = lLine.trim().startsWith('[') && lLine.trim().endsWith(']');
-                  
-                  // Hide unrecognized bracketed text before the first lyrical section
-                  const lyricsLines = (currentSong.lyrics || '').split('\n');
-                  const firstLyricalIdx = firstLyricalSection ? lyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
-                  const shouldHideProductionNote = isRawBracketed && !isSectionStr && firstLyricalIdx !== -1 && i < firstLyricalIdx;
-
-                  return (
-                    <div key={i} className={cn("pt-0 pb-1", shouldHideProductionNote && "hidden")}>
-                      {lLine && (
-                        <p 
-                          data-section={isSectionStr ? cleanedLabel : undefined}
-                          className={cn(
-                            "whitespace-pre-wrap leading-snug font-medium transition-colors",
-                            fontFamily === 'serif' ? 'font-serif' : fontFamily === 'mono' ? 'font-mono-tech' : 'font-sans',
-                            isBold && "font-bold",
-                            isSectionStr 
-                              ? cn(
-                                  "text-primary-accent font-black tracking-[0.25em] uppercase font-mono-tech pt-3 pb-1.5 bg-primary-accent/5",
-                                  textAlign === 'center' ? "rounded-xl px-4 inline-block" : "border-l-4 border-primary-accent pl-4 rounded-r-xl block w-full"
-                                )
-                              : "text-white block w-full"
-                          )}
-                          style={{ 
-                            fontSize: `${fontSize}px`, 
-                            textAlign: textAlign,
-                            marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
-                            marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
-                            lineHeight: isSectionStr ? '1.2' : lineHeight
-                          }}
-                        >
-                          {isSectionStr ? cleanedLabel : lLine}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })
-              )
+                        return (
+                         <p 
+                           key={i}
+                           data-section={isSectionStr ? cleanedLabel : undefined}
+                           className={cn(
+                             "whitespace-pre-wrap leading-snug font-medium transition-colors min-h-[1.2em]",
+                             shouldHideProductionNote && "hidden",
+                             fontFamily === 'serif' ? 'font-serif' : fontFamily === 'mono' ? 'font-mono-tech' : 'font-sans',
+                             isBold && "font-bold",
+                             isSectionStr 
+                               ? cn(
+                                   "text-primary-accent font-black tracking-[0.25em] uppercase font-mono-tech pt-3 pb-1.5 bg-primary-accent/5",
+                                   textAlign === 'center' ? "rounded-xl px-4 inline-block" : "border-l-4 border-primary-accent/30 pl-4 rounded-r-xl block w-full"
+                                 )
+                               : "text-white block w-full"
+                           )}
+                           style={{ 
+                             fontSize: `${fontSize}px`, 
+                             textAlign: textAlign,
+                             marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
+                             marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
+                             lineHeight: isSectionStr ? '1.2' : lineHeight
+                           }}
+                         >
+                           {isSectionStr ? cleanedLabel : line}
+                         </p>
+                        );
+                     })}
+                   </div>
+                 </div>
+               ) : (
+                 cleanLyricsLines.map((lLine, i) => {
+                   const cleanedLabel = cleanSectionLabel(lLine);
+                   const isSectionStr = cleanedLabel !== null;
+                   const isRawBracketed = lLine.trim().startsWith('[') && lLine.trim().endsWith(']');
+                   const firstLyricalIdx = firstLyricalSection ? cleanLyricsLines.findIndex(l => l.trim() === firstLyricalSection) : -1;
+                   const shouldHideProductionNote = isRawBracketed && !isSectionStr && firstLyricalIdx !== -1 && i < firstLyricalIdx;
+ 
+                   return (
+                     <div key={i} className={cn("pt-0 pb-1", shouldHideProductionNote && "hidden")}>
+                       {lLine && (
+                         <p 
+                           data-section={isSectionStr ? cleanedLabel : undefined}
+                           className={cn(
+                             "whitespace-pre-wrap leading-snug font-medium transition-colors",
+                             fontFamily === 'serif' ? 'font-serif' : fontFamily === 'mono' ? 'font-mono-tech' : 'font-sans',
+                             isBold && "font-bold",
+                             isSectionStr 
+                               ? cn(
+                                   "text-primary-accent font-black tracking-[0.25em] uppercase font-mono-tech pt-3 pb-1.5 bg-primary-accent/5",
+                                   textAlign === 'center' ? "rounded-xl px-4 inline-block" : "border-l-4 border-primary-accent pl-4 rounded-r-xl block w-full"
+                                 )
+                               : "text-white block w-full"
+                           )}
+                           style={{ 
+                             fontSize: `${fontSize}px`, 
+                             textAlign: textAlign,
+                             marginTop: isSectionStr ? `${sectionSpacing * 1.15}em` : '0',
+                             marginBottom: isSectionStr ? `${sectionSpacing * 0.15}em` : '0',
+                             lineHeight: isSectionStr ? '1.2' : lineHeight
+                           }}
+                         >
+                           {isSectionStr ? cleanedLabel : lLine}
+                         </p>
+                       )}
+                     </div>
+                   );
+                 }))
             ) : (
               <div className="flex flex-col items-center justify-center py-32 text-gray-500 opacity-50">
                 <p className="font-black uppercase tracking-[0.3em]">No Lyrics Available</p>
@@ -1051,6 +1098,28 @@ export default function PerformanceMode() {
                     </div>
                   </div>
                 )}
+
+                <div className="pt-4 border-t border-white/5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black uppercase text-gray-400 tracking-wider">Show Performance Notes</span>
+                    <button 
+                      onClick={() => {
+                        const newVal = !showPerformanceNotesSetting;
+                        setShowPerformanceNotesSetting(newVal);
+                        localStorage.setItem('songbinder_show_performance_notes', newVal ? 'true' : 'false');
+                      }}
+                      className={cn(
+                          "w-10 h-5 rounded-full transition-all relative",
+                          showPerformanceNotesSetting ? "bg-primary-accent" : "bg-bg-tertiary"
+                      )}
+                    >
+                      <div className={cn(
+                          "absolute top-1 w-3 h-3 rounded-full bg-white transition-all",
+                          showPerformanceNotesSetting ? "right-1" : "left-1"
+                      )} />
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="flex justify-end pt-6 mt-2">
