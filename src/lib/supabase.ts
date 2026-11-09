@@ -230,15 +230,14 @@ export async function upsertSetlistToSupabase(setlist: any, userId: string) {
 
   const legacyId = String(setlist.id).trim();
   const rawName = String(setlist.name || '').trim();
-  const songIds = Array.isArray(setlist.songIds) ? setlist.songIds : [];
   const updatedAtIso = setlist.updatedAt ? new Date(setlist.updatedAt).toISOString() : new Date().toISOString();
 
-  // Try full payload preserving ordered song_ids array and active status
+  // Upsert setlist record without writing song_ids.
+  // The replace_setlist_songs RPC (or fallback) is the authoritative writer of song_ids alongside relational links.
   const fullPayload = {
     user_id: String(userId).trim(),
     legacy_id: legacyId,
     name: rawName,
-    song_ids: songIds,
     deleted_at: null,
     updated_at: updatedAtIso,
   };
@@ -247,7 +246,7 @@ export async function upsertSetlistToSupabase(setlist: any, userId: string) {
     const result = await (supabaseClient as any)
       .from('setlists')
       .upsert(fullPayload, { onConflict: 'user_id,legacy_id' })
-      .select('id,user_id,name,created_at,updated_at,legacy_id,song_ids,deleted_at')
+      .select('id,user_id,name,created_at,updated_at,legacy_id,deleted_at')
       .single();
 
     if (!result.error) {
@@ -256,17 +255,17 @@ export async function upsertSetlistToSupabase(setlist: any, userId: string) {
 
     const errCode = result.error.code;
     const errMsg = (result.error.message || '').toLowerCase();
-    const isColumnMissing = errCode === '42703' || errMsg.includes('column') || errMsg.includes('song_ids') || errMsg.includes('deleted_at');
+    const isColumnMissing = errCode === '42703' || errMsg.includes('column') || errMsg.includes('deleted_at');
 
     if (!isColumnMissing) {
       console.error('[SongSync] Setlist upsert error', result.error);
       throw result.error;
     }
 
-    console.warn('[SongSync] Supabase "setlists" table missing song_ids/deleted_at columns. Run Phase 1 migration SQL. Falling back to basic payload.');
+    console.warn('[SongSync] Supabase "setlists" table missing deleted_at column. Falling back to basic payload.');
   } catch (err: any) {
     const errMsg = (err?.message || '').toLowerCase();
-    const isColumnMissing = err?.code === '42703' || errMsg.includes('column') || errMsg.includes('song_ids');
+    const isColumnMissing = err?.code === '42703' || errMsg.includes('column') || errMsg.includes('deleted_at');
     if (!isColumnMissing) throw err;
   }
 
@@ -388,9 +387,45 @@ export async function fetchSetlistsForUser(userId: string) {
 }
 
 /**
+ * Determines whether an error returned from Supabase RPC indicates that the function
+ * is genuinely missing or unavailable on the database schema, as opposed to a business logic,
+ * authorization, or validation error.
+ */
+function isRpcUnavailableError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '').trim().toUpperCase();
+  const message = String(err.message || '').toLowerCase();
+
+  // 1. PostgREST error code: Function not found in schema cache
+  if (code === 'PGRST202') return true;
+
+  // 2. PostgreSQL error code: undefined_function (SQLSTATE 42883)
+  if (code === '42883') return true;
+
+  // 3. HTTP 404 Not Found specifically for missing replace_setlist_songs RPC endpoint.
+  // Unrelated 404s (e.g., general route, proxy, or gateway errors) are never classified as an unavailable RPC.
+  const details = String(err.details || '').toLowerCase();
+  if (err.status === 404 && (message.includes('replace_setlist_songs') || details.includes('replace_setlist_songs'))) {
+    return true;
+  }
+
+  // 4. Exact PostgREST / Postgres missing-function message patterns only
+  if (
+    message.includes('could not find the function public.replace_setlist_songs in the schema cache') ||
+    message.includes('could not find the function replace_setlist_songs in the schema cache') ||
+    message.includes('function replace_setlist_songs does not exist') ||
+    message.includes('function public.replace_setlist_songs does not exist')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Replaces songs in setlist_songs in Supabase with transaction safety.
- * First tries atomic Postgres RPC if provisioned.
- * Falls back to non-destructive client update that safeguards existing songs if insert fails.
+ * - Primary Path: Atomic Postgres RPC (replace_setlist_songs) providing true ACID atomicity.
+ * - Secondary Fallback: Client-side sequential compensation ONLY when the RPC is confirmed missing.
  */
 export async function replaceSetlistSongsInSupabase(setlistId: string, remoteSongIds: string[], userId: string) {
   const supabaseClient = getClient();
@@ -411,23 +446,95 @@ export async function replaceSetlistSongsInSupabase(setlistId: string, remoteSon
     if (!rpcError) {
       return { skipped: false, count: orderedSongIds.length, method: 'rpc' };
     }
-  } catch {
-    // RPC not present on Supabase yet; proceed to client-side safe replacement
+
+    // Strict Error Classification:
+    // Only fall back to client-side sequential update if the RPC is demonstrably missing/unavailable.
+    // Never fall back on authentication, authorization, ownership, or validation failures.
+    if (isRpcUnavailableError(rpcError)) {
+      console.warn('[SongSync] replace_setlist_songs RPC is not installed on Supabase. Falling back to client-side sequential update.', rpcError);
+    } else {
+      console.error('[SongSync] replace_setlist_songs RPC rejected with validation or database error:', rpcError);
+      throw rpcError;
+    }
+  } catch (rpcCallErr: any) {
+    if (isRpcUnavailableError(rpcCallErr)) {
+      console.warn('[SongSync] replace_setlist_songs RPC is not available. Falling back to client-side sequential update.', rpcCallErr);
+    } else {
+      throw rpcCallErr;
+    }
+  }
+
+  // Fallback Preflight Security Validation:
+  // Avoid relying solely on caller-supplied userId: Verify active authenticated Supabase session
+  const currentUser = await getCurrentUser();
+  if (!currentUser || !currentUser.id) {
+    throw new Error('Unauthorized: No active authenticated Supabase session.');
+  }
+  if (currentUser.id !== userId) {
+    throw new Error('Forbidden: Caller userId does not match authenticated user session.');
+  }
+  const effectiveUserId = currentUser.id;
+
+  // 1. Verify target setlist exists, belongs to authenticated user, and is active (deleted_at IS NULL)
+  const { data: setlistRow, error: setlistFetchErr } = await (supabaseClient as any)
+    .from('setlists')
+    .select('id, user_id, deleted_at')
+    .eq('id', String(setlistId))
+    .single();
+
+  if (setlistFetchErr || !setlistRow) {
+    console.error('[SongSync] Preflight failed: Target setlist not found or unauthorized', setlistFetchErr);
+    throw new Error(`Validation failed: Target setlist not found or unauthorized (${setlistFetchErr?.message || 'not found'}).`);
+  }
+
+  if (setlistRow.user_id !== effectiveUserId) {
+    throw new Error('Forbidden: Target setlist does not belong to the authenticated user.');
+  }
+
+  if (setlistRow.deleted_at) {
+    throw new Error('Validation failed: Target setlist has been deleted.');
+  }
+
+  // 2. If songs are requested, verify EVERY requested song exists, belongs to authenticated user,
+  // and has deleted_at IS NULL BEFORE modifying any existing links.
+  if (orderedSongIds.length > 0) {
+    const { data: songsData, error: songsFetchErr } = await (supabaseClient as any)
+      .from('songs')
+      .select('id, user_id, deleted_at')
+      .in('id', orderedSongIds);
+
+    if (songsFetchErr) {
+      console.error('[SongSync] Preflight failed: Could not query songs for validation', songsFetchErr);
+      throw new Error(`Validation failed: Error querying songs for validation (${songsFetchErr.message || songsFetchErr}).`);
+    }
+
+    const activeUserSongs = new Set(
+      (songsData || [])
+        .filter((s: any) => s.user_id === effectiveUserId && !s.deleted_at)
+        .map((s: any) => String(s.id))
+    );
+
+    for (const songId of orderedSongIds) {
+      if (!activeUserSongs.has(String(songId))) {
+        throw new Error(`Validation failed: Song "${songId}" is invalid, deleted, or unauthorized.`);
+      }
+    }
   }
 
   // Safe client-side replacement:
   // 1. Snapshot existing links before making changes
-  let existingLinks: any[] = [];
-  try {
-    const { data } = await (supabaseClient as any)
-      .from('setlist_songs')
-      .select('setlist_id,song_id,position,user_id')
-      .eq('user_id', userId)
-      .eq('setlist_id', String(setlistId));
-    existingLinks = data || [];
-  } catch {
-    // Non-fatal
+  const { data: snapshotData, error: snapshotError } = await (supabaseClient as any)
+    .from('setlist_songs')
+    .select('setlist_id,song_id,position,user_id')
+    .eq('user_id', effectiveUserId)
+    .eq('setlist_id', String(setlistId));
+
+  if (snapshotError) {
+    console.error('[SongSync] Aborting setlist update: Failed to query existing setlist_songs snapshot.', snapshotError);
+    throw new Error(`Failed to snapshot existing setlist links before update: ${snapshotError.message || snapshotError}`);
   }
+
+  const existingLinks: any[] = snapshotData || [];
 
   try {
     // 2. Delete existing links
@@ -437,13 +544,46 @@ export async function replaceSetlistSongsInSupabase(setlistId: string, remoteSon
       .eq('user_id', userId)
       .eq('setlist_id', String(setlistId));
 
-    if (deleteError) throw deleteError;
+    if (deleteError) {
+      console.error('[SongSync] Failed to clear existing setlist_songs links:', deleteError);
+      throw deleteError;
+    }
 
+    // 3. Handle intentionally emptied setlist:
+    // Must update public.setlists.song_ids to [] so both representations agree
     if (!orderedSongIds.length) {
+      let emptyUpdateError: any = null;
+      try {
+        const { error: updateError } = await (supabaseClient as any)
+          .from('setlists')
+          .update({
+            song_ids: [],
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', String(setlistId))
+          .eq('user_id', String(userId));
+        
+        if (updateError) {
+          emptyUpdateError = updateError;
+        }
+      } catch (err) {
+        emptyUpdateError = err;
+      }
+
+      if (emptyUpdateError) {
+        console.warn('[SongSync] Partial success: setlist_songs cleared, but setlists.song_ids update to [] failed. Next sync will self-heal.', emptyUpdateError);
+        return {
+          skipped: false,
+          count: 0,
+          method: 'direct_partial',
+          warning: 'Relational links cleared, but song_ids update to [] failed. Next sync will self-heal.'
+        };
+      }
+
       return { skipped: false, count: 0, method: 'direct' };
     }
 
-    // 3. Insert new ordered rows
+    // 4. Insert new ordered rows for non-empty setlist
     const rows = orderedSongIds.map((songId, index) => ({
       user_id: String(userId),
       setlist_id: String(setlistId),
@@ -456,21 +596,71 @@ export async function replaceSetlistSongsInSupabase(setlistId: string, remoteSon
       .insert(rows);
 
     if (insertError) {
-      console.error('[SongSync] setlist_songs insert error, attempting rollback', insertError);
-      // Rollback: Re-insert previously existing links to prevent cloud data loss
+      console.error('[SongSync] setlist_songs insert error, attempting client-side compensating restoration', insertError);
+      
+      // Best-effort compensating restoration using saved snapshot
+      let restorationFailed = false;
+      let restorationError: any = null;
       if (existingLinks.length > 0) {
-        await (supabaseClient as any)
-          .from('setlist_songs')
-          .insert(existingLinks)
-          .catch((rbErr: any) => console.error('[SongSync] Rollback failed:', rbErr));
+        try {
+          const { error: restoreErr } = await (supabaseClient as any)
+            .from('setlist_songs')
+            .insert(existingLinks);
+          if (restoreErr) {
+            restorationFailed = true;
+            restorationError = restoreErr;
+          }
+        } catch (rErr) {
+          restorationFailed = true;
+          restorationError = rErr;
+        }
       }
+
+      if (restorationFailed) {
+        console.error('[SongSync] CRITICAL: Compensating restoration failed. Setlist songs on cloud may be empty until next sync.', restorationError);
+        throw new Error(`Replacement failed (${insertError.message || insertError}) and compensating restoration failed (${restorationError?.message || restorationError}). Local Dexie data remains intact.`);
+      }
+
       throw insertError;
+    }
+
+    // 5. Client-side sequential fallback for setlists.song_ids:
+    // IMPORTANT ARCHITECTURAL NOTE:
+    // This fallback is NOT ACID-atomic. It executes as a separate, sequential HTTP request after
+    // relational setlist_songs rows are successfully inserted. If an interruption occurs here,
+    // relational links are already safe in Supabase, and the next sync cycle will heal the song_ids column.
+    let songIdsUpdateError: any = null;
+    try {
+      const { error: updateError } = await (supabaseClient as any)
+        .from('setlists')
+        .update({
+          song_ids: orderedSongIds,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', String(setlistId))
+        .eq('user_id', String(userId));
+      
+      if (updateError) {
+        songIdsUpdateError = updateError;
+      }
+    } catch (fallbackUpdateErr) {
+      songIdsUpdateError = fallbackUpdateErr;
+    }
+
+    if (songIdsUpdateError) {
+      console.warn('[SongSync] Partial success: setlist_songs rows updated, but setlists.song_ids JSONB update failed. Relational links are intact; next sync will repair the JSONB column.', songIdsUpdateError);
+      return {
+        skipped: false,
+        count: rows.length,
+        method: 'direct_partial',
+        warning: 'Relational links replaced, but song_ids column update failed. Next sync will self-heal.'
+      };
     }
 
     return { skipped: false, count: rows.length, method: 'direct' };
   } catch (error) {
-    console.warn('[SongSync] setlist_songs replace failed safely without corrupting data', error);
-    return { skipped: true, count: 0, error };
+    console.error('[SongSync] replaceSetlistSongsInSupabase direct fallback failed:', error);
+    throw error;
   }
 }
 

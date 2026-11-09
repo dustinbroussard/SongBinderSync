@@ -230,6 +230,8 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       const allSetlists = await db.setlists.toArray();
       const activeSetlists = allSetlists.filter(setlist => !deletedSetlistIds.has(String(setlist.id).trim()));
 
+      const partialSetlists: string[] = [];
+
       for (const setlist of activeSetlists) {
         const remoteSetlist = await upsertSetlistToSupabase(setlist, user.id);
         if (remoteSetlist?.id) {
@@ -240,22 +242,38 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
             .map(songId => legacySongIdToSupabaseId.get(songId))
             .filter(Boolean) as string[];
 
-          await replaceSetlistSongsInSupabase(
+          const syncResult = await replaceSetlistSongsInSupabase(
             remoteSetlist.id,
             remoteSongIds,
             user.id
           );
+
+          if (syncResult && (syncResult as any).skipped && (syncResult as any).error) {
+            throw (syncResult as any).error;
+          }
+
+          if (syncResult && (syncResult as any).method === 'direct_partial') {
+            partialSetlists.push(setlist.name || 'Untitled Setlist');
+          }
         }
       }
 
-      const statusMsg = `Push completed: ${activeSongs.length} song(s) and ${activeSetlists.length} setlist(s) backed up (${tombstones.length} deletion(s) synchronized).`;
-      setSyncStatus(statusMsg);
-      showNotice(statusMsg);
-      setTimeout(() => setSyncStatus(null), 4000);
-    } catch (err) {
+      if (partialSetlists.length > 0) {
+        const partialMsg = `Push partially completed: ${activeSongs.length} song(s) and ${activeSetlists.length} setlist(s) backed up. Warning: Relational links were saved, but JSONB column updates failed for ${partialSetlists.length} setlist(s) (${partialSetlists.join(', ')}). The next sync will self-heal.`;
+        setSyncStatus(partialMsg);
+        showNotice(partialMsg, "error");
+        setTimeout(() => setSyncStatus(null), 8000);
+      } else {
+        const statusMsg = `Push completed: ${activeSongs.length} song(s) and ${activeSetlists.length} setlist(s) backed up (${tombstones.length} deletion(s) synchronized).`;
+        setSyncStatus(statusMsg);
+        showNotice(statusMsg);
+        setTimeout(() => setSyncStatus(null), 4000);
+      }
+    } catch (err: any) {
       console.error(err);
-      setSyncStatus("Failed to push to cloud. Please check network connection.");
-      showNotice("Failed to push to cloud.", "error");
+      const errMsg = err?.message ? `Failed to push to cloud: ${err.message}` : "Failed to push to cloud. Please check network connection.";
+      setSyncStatus(errMsg);
+      showNotice(errMsg, "error");
     } finally {
       setPushing(false);
     }

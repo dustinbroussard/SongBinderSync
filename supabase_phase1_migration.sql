@@ -87,9 +87,20 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Setlist not found, deleted, or unauthorized';
   END IF;
 
-  -- 3 & 4. Validate ALL requested song IDs BEFORE modifying any data:
+  -- 3 & 4. Validate and lock ALL requested song rows BEFORE modifying any data:
   -- Verify every song belongs to the authenticated user and is active (not deleted).
+  -- Acquire shared locks (FOR SHARE) on all validated song rows to prevent concurrent
+  -- transactions from soft-deleting (updating deleted_at) or altering them before insertion.
   IF p_song_ids IS NOT NULL AND array_length(p_song_ids, 1) > 0 THEN
+    -- Lock all active matching songs owned by the user
+    PERFORM 1 
+    FROM public.songs s
+    WHERE s.id::text = ANY(p_song_ids)
+      AND s.user_id = v_user_id 
+      AND s.deleted_at IS NULL
+    FOR SHARE;
+
+    -- Verify that EVERY requested song ID was found, belongs to the authenticated user, and is active
     IF EXISTS (
       SELECT 1 
       FROM unnest(p_song_ids) AS requested(requested_song_id)
