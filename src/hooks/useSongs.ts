@@ -1,6 +1,6 @@
 import { useMemo, useCallback } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "../lib/db";
+import { db, recordTombstone, clearTombstone } from "../lib/db";
 import type { Song } from "../types";
 import { v4 as uuidv4 } from "uuid";
 import Fuse from "fuse.js";
@@ -97,11 +97,13 @@ export function useSongs(
       metadata: {}
     };
     await db.songs.add(newSong);
+    await clearTombstone(newSong.id);
     return newSong;
   }, []);
 
   const deleteSong = useCallback(async (id: string) => {
     await db.songs.delete(id);
+    await recordTombstone(id, 'song');
     // Also remove from all setlists
     const setlists = await db.setlists.toArray();
     for (const setlist of setlists) {

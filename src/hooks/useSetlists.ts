@@ -1,5 +1,5 @@
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "../lib/db";
+import { db, recordTombstone, clearTombstone } from "../lib/db";
 import type { Setlist } from "../types";
 import { v4 as uuidv4 } from "uuid";
 
@@ -15,11 +15,13 @@ export function useSetlists() {
       updatedAt: Date.now()
     };
     await db.setlists.add(newSetlist);
+    await clearTombstone(newSetlist.id);
     return newSetlist;
   };
 
   const deleteSetlist = async (id: string) => {
     await db.setlists.delete(id);
+    await recordTombstone(id, 'setlist');
   };
 
   const duplicateSetlist = async (id: string, newName: string) => {

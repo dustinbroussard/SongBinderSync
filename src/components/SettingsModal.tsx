@@ -10,7 +10,9 @@ import {
   replaceSetlistSongsInSupabase,
   fetchSongsForUser,
   fetchSetlistsForUser,
-  upsertProfile
+  upsertProfile,
+  markSongDeletedInSupabase,
+  markSetlistDeletedInSupabase
 } from "../lib/supabase";
 
 interface SettingsModalProps {
@@ -190,21 +192,52 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     try {
       await upsertProfile(user);
 
-      const songs = await db.songs.toArray();
+      // 1. Read local tombstones before uploading and build separate sets of deleted IDs
+      const tombstones = await db.tombstones.toArray();
+      const deletedSongIds = new Set(
+        tombstones
+          .filter(t => t.type === 'song')
+          .map(t => String(t.id).trim())
+      );
+      const deletedSetlistIds = new Set(
+        tombstones
+          .filter(t => t.type === 'setlist')
+          .map(t => String(t.id).trim())
+      );
+
+      // Synchronize local deletion tombstones to cloud so other devices won't resurrect them
+      for (const tomb of tombstones) {
+        if (tomb.type === 'song') {
+          await markSongDeletedInSupabase(tomb.id, tomb.deletedAt, user.id);
+        } else if (tomb.type === 'setlist') {
+          await markSetlistDeletedInSupabase(tomb.id, tomb.deletedAt, user.id);
+        }
+      }
+
+      // 2. Exclude tombstoned songs from active upload loop (cannot be marked deleted and uploaded active in same push)
+      const allSongs = await db.songs.toArray();
+      const activeSongs = allSongs.filter(song => !deletedSongIds.has(String(song.id).trim()));
+
       const legacySongIdToSupabaseId = new Map<string, string>();
-      for (const song of songs) {
+      for (const song of activeSongs) {
         const remoteSong = await upsertSongToSupabase(song, user.id);
         if (remoteSong?.id) {
           legacySongIdToSupabaseId.set(String(song.id), String(remoteSong.id));
         }
       }
 
-      const setlists = await db.setlists.toArray();
-      for (const setlist of setlists) {
+      // 3. Exclude tombstoned setlists from active upload loop
+      const allSetlists = await db.setlists.toArray();
+      const activeSetlists = allSetlists.filter(setlist => !deletedSetlistIds.has(String(setlist.id).trim()));
+
+      for (const setlist of activeSetlists) {
         const remoteSetlist = await upsertSetlistToSupabase(setlist, user.id);
         if (remoteSetlist?.id) {
+          // Filter song IDs to exclude deleted songs and map to remote Supabase song IDs
           const remoteSongIds = (setlist.songIds || [])
-            .map(songId => legacySongIdToSupabaseId.get(String(songId)))
+            .map(songId => String(songId).trim())
+            .filter(songId => !deletedSongIds.has(songId))
+            .map(songId => legacySongIdToSupabaseId.get(songId))
             .filter(Boolean) as string[];
 
           await replaceSetlistSongsInSupabase(
@@ -215,11 +248,14 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
         }
       }
 
-      setSyncStatus("Push to cloud completed successfully!");
-      setTimeout(() => setSyncStatus(null), 3000);
+      const statusMsg = `Push completed: ${activeSongs.length} song(s) and ${activeSetlists.length} setlist(s) backed up (${tombstones.length} deletion(s) synchronized).`;
+      setSyncStatus(statusMsg);
+      showNotice(statusMsg);
+      setTimeout(() => setSyncStatus(null), 4000);
     } catch (err) {
       console.error(err);
-      setSyncStatus("Failed to push to cloud. Please try again.");
+      setSyncStatus("Failed to push to cloud. Please check network connection.");
+      showNotice("Failed to push to cloud.", "error");
     } finally {
       setPushing(false);
     }
@@ -235,54 +271,149 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     setSyncStatus("Pulling from cloud...");
 
     try {
+      // 1. Fetch remote songs (including metadata, bpm, and deleted_at)
       const remoteSongs = await fetchSongsForUser(user.id);
+      const localTombstones = new Map((await db.tombstones.toArray()).map(t => [t.id, t]));
       const supabaseIdToLegacyId = new Map<string, string>();
       const knownLegacySongIds = new Set<string>();
-      
+
+      let pulledSongsCount = 0;
+      let deletedSongsCount = 0;
+
       for (const remoteSong of remoteSongs as any[]) {
-        const existingSong = await db.songs.get(remoteSong.legacy_id);
-        const legacySongId = String(remoteSong.legacy_id);
+        const legacySongId = String(remoteSong.legacy_id || '').trim();
+        if (!legacySongId) continue;
+
+        const remoteUpdatedAt = remoteSong.updated_at ? new Date(remoteSong.updated_at).getTime() : 0;
+        const localTombstone = localTombstones.get(legacySongId);
+
+        // If song was deleted locally after the remote version was updated, DO NOT resurrect
+        if (localTombstone && localTombstone.type === 'song' && localTombstone.deletedAt >= remoteUpdatedAt) {
+          continue;
+        }
+
+        // If remote song is marked deleted in the cloud, apply deletion locally
+        if (remoteSong.deleted_at) {
+          await db.songs.delete(legacySongId);
+          await db.tombstones.put({
+            id: legacySongId,
+            type: 'song',
+            deletedAt: new Date(remoteSong.deleted_at).getTime()
+          });
+          deletedSongsCount++;
+          continue;
+        }
+
+        // Active song: Merge metadata safely without losing local keys, notes, or tempo
+        const existingSong = await db.songs.get(legacySongId);
+
+        // Never overwrite existing local metadata if remote metadata is missing or empty
+        const remoteMeta = (remoteSong.metadata && typeof remoteSong.metadata === 'object' && Object.keys(remoteSong.metadata).length > 0)
+          ? remoteSong.metadata
+          : null;
+
+        const localMeta = existingSong?.metadata || {};
+
+        const finalMetadata = remoteMeta 
+          ? { ...localMeta, ...remoteMeta }
+          : localMeta;
+
+        const bpm = typeof remoteSong.bpm === 'number'
+          ? remoteSong.bpm
+          : (existingSong?.bpm !== undefined ? existingSong.bpm : undefined);
+
         await db.songs.put({
           id: legacySongId,
-          title: remoteSong.title,
-          lyrics: remoteSong.lyrics,
-          createdAt: existingSong?.createdAt || new Date(remoteSong.created_at).getTime(),
-          updatedAt: new Date(remoteSong.updated_at).getTime(),
-          metadata: existingSong?.metadata || {}
+          title: remoteSong.title || existingSong?.title || 'Untitled Song',
+          lyrics: typeof remoteSong.lyrics === 'string' ? remoteSong.lyrics : (existingSong?.lyrics || ''),
+          createdAt: existingSong?.createdAt || (remoteSong.created_at ? new Date(remoteSong.created_at).getTime() : Date.now()),
+          updatedAt: remoteUpdatedAt || existingSong?.updatedAt || Date.now(),
+          bpm,
+          metadata: finalMetadata
         });
-        // Map Supabase song ID to legacy ID
+
+        // Clear older local tombstone now that an active remote record is accepted
+        if (localTombstone) {
+          await db.tombstones.delete(legacySongId);
+        }
+
         supabaseIdToLegacyId.set(String(remoteSong.id), legacySongId);
         knownLegacySongIds.add(legacySongId);
+        pulledSongsCount++;
       }
 
+      // 2. Fetch remote setlists (including ordered songs and deleted_at)
       const remoteSetlists = await fetchSetlistsForUser(user.id);
+      let pulledSetlistsCount = 0;
+
       for (const remoteSetlist of remoteSetlists as any[]) {
-        const existingSetlist = await db.setlists.get(remoteSetlist.legacy_id);
-        // Convert Supabase song IDs to legacy IDs. Keep a direct legacy ID match
-        // as a fallback for older link rows that were synced before this fix.
-        const legacySongIds = (remoteSetlist.songs || [])
-          .map((songId: string) => {
-            const normalizedSongId = String(songId);
-            return supabaseIdToLegacyId.get(normalizedSongId) || normalizedSongId;
-          })
-          .filter(songId => knownLegacySongIds.has(songId))
-          .filter(Boolean) as string[];
-        
+        const legacySetlistId = String(remoteSetlist.legacy_id || '').trim();
+        if (!legacySetlistId) continue;
+
+        const remoteUpdatedAt = remoteSetlist.updated_at ? new Date(remoteSetlist.updated_at).getTime() : 0;
+        const localTombstone = localTombstones.get(legacySetlistId);
+
+        // If setlist was deleted locally after the remote version was updated, DO NOT resurrect
+        if (localTombstone && localTombstone.type === 'setlist' && localTombstone.deletedAt >= remoteUpdatedAt) {
+          continue;
+        }
+
+        // If remote setlist was marked deleted in cloud, apply deletion locally
+        if (remoteSetlist.deleted_at) {
+          await db.setlists.delete(legacySetlistId);
+          await db.tombstones.put({
+            id: legacySetlistId,
+            type: 'setlist',
+            deletedAt: new Date(remoteSetlist.deleted_at).getTime()
+          });
+          continue;
+        }
+
+        const existingSetlist = await db.setlists.get(legacySetlistId);
+
+        // Resolve song IDs from relational setlist_songs links or direct song_ids column
+        let resolvedSongIds: string[] = [];
+        if (Array.isArray(remoteSetlist.songs) && remoteSetlist.songs.length > 0) {
+          resolvedSongIds = remoteSetlist.songs
+            .map((songId: string) => {
+              const normalized = String(songId);
+              return supabaseIdToLegacyId.get(normalized) || normalized;
+            })
+            .filter(songId => knownLegacySongIds.has(songId));
+        } else if (Array.isArray(remoteSetlist.song_ids) && remoteSetlist.song_ids.length > 0) {
+          resolvedSongIds = remoteSetlist.song_ids
+            .map((songId: string) => {
+              const normalized = String(songId);
+              return supabaseIdToLegacyId.get(normalized) || normalized;
+            })
+            .filter(songId => knownLegacySongIds.has(songId));
+        } else if (existingSetlist && Array.isArray(existingSetlist.songIds) && existingSetlist.songIds.length > 0) {
+          // Safeguard local setlist songs if remote links failed during a previous push
+          resolvedSongIds = existingSetlist.songIds;
+        }
+
         await db.setlists.put({
-          id: remoteSetlist.legacy_id,
-          name: remoteSetlist.name,
-          songIds: legacySongIds,
-          createdAt: existingSetlist?.createdAt || new Date(remoteSetlist.created_at).getTime(),
-          updatedAt: new Date(remoteSetlist.updated_at).getTime()
+          id: legacySetlistId,
+          name: remoteSetlist.name || existingSetlist?.name || 'Untitled Setlist',
+          songIds: resolvedSongIds,
+          createdAt: existingSetlist?.createdAt || (remoteSetlist.created_at ? new Date(remoteSetlist.created_at).getTime() : Date.now()),
+          updatedAt: remoteUpdatedAt || existingSetlist?.updatedAt || Date.now()
         });
+
+        if (localTombstone) {
+          await db.tombstones.delete(legacySetlistId);
+        }
+        pulledSetlistsCount++;
       }
 
-      setSyncStatus("Pull from cloud completed successfully!");
-      setTimeout(() => setSyncStatus(null), 3000);
-      window.location.reload();
+      const statusMsg = `Pull completed: ${pulledSongsCount} song(s) and ${pulledSetlistsCount} setlist(s) synchronized.`;
+      setSyncStatus(statusMsg);
+      showNotice(statusMsg);
+      setTimeout(() => setSyncStatus(null), 4000);
     } catch (err) {
       console.error(err);
-      setSyncStatus("Failed to pull from cloud. Please try again.");
+      setSyncStatus("Failed to pull from cloud. Please check network connection.");
+      showNotice("Failed to pull from cloud.", "error");
     } finally {
       setPulling(false);
     }

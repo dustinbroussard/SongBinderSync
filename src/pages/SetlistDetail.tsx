@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, type Key } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Play, Plus, Trash2, Search, Download, Type, FileJson, FileType, Music, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "../lib/db";
+import { db, recordTombstone } from "../lib/db";
 import type { Song } from "../types";
 import { cn } from "../lib/utils";
 import jsPDF from "jspdf";
@@ -375,6 +375,7 @@ export default function SetlistDetail() {
 
   const deleteSetlist = async () => {
     await db.setlists.delete(setlist.id);
+    await recordTombstone(setlist.id, 'setlist');
     navigate('/setlists');
   };
 
