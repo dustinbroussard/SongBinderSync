@@ -1,6 +1,5 @@
 import React, { useState, type FormEvent, type MouseEvent } from "react";
-import { Search, Plus, Upload, Trash2, X, Copy, Check, ListOrdered, Download, Play, ChevronRight } from "lucide-react";
-import CustomIcon from "../components/CustomIcon";
+import { Search, Plus, Upload, Trash2, X, Copy, Check, ListOrdered, Download, ChevronRight } from "lucide-react";
 import { useSongs } from "../hooks/useSongs";
 import { useNavigate } from "react-router-dom";
 import { cn } from "../lib/utils";
@@ -9,34 +8,23 @@ import { normalizeSongTitleValue, normalizeSmartQuotes } from "../lib/normalizat
 import mammoth from "mammoth";
 import { useRef } from "react";
 import type { Song } from "../types";
+import { useToast } from "../components/ToastProvider";
 
-const containerVariants = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: {
-      staggerChildren: 0.05
-    }
-  }
-};
-
-const itemVariants = {
-  hidden: { opacity: 0, y: 10 },
-  show: { opacity: 1, y: 0 }
-};
 
 export default function SongsLibrary() {
   const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = React.useDeferredValue(searchQuery);
   const [sortBy, setSortBy] = useState<'title' | 'updatedAt'>('title');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   
-  const { songs, addSong, deleteSong } = useSongs(searchQuery, sortBy, sortOrder);
+  const { songs, addSong, deleteSong } = useSongs(deferredSearchQuery, sortBy, sortOrder);
   const [showAddModal, setShowAddModal] = useState(false);
   const [songToDelete, setSongToDelete] = useState<Song | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const { success, error } = useToast();
 
   const handleCopy = async (e: MouseEvent, song: any) => {
     e.stopPropagation();
@@ -44,21 +32,29 @@ export default function SongsLibrary() {
       const text = `${song.title}\n\n${song.lyrics || "No content"}`;
       await navigator.clipboard.writeText(text);
       setCopiedId(song.id);
+      success(`Copied "${song.title}" to clipboard`);
       setTimeout(() => setCopiedId(null), 2000);
     } catch (err) {
       console.error("Failed to copy", err);
+      error("Failed to copy to clipboard");
     }
   };
 
   const handleDownload = (e: MouseEvent, song: Song) => {
     e.stopPropagation();
-    const element = document.createElement("a");
-    const file = new Blob([`${song.title}\n\n${song.lyrics || ""}`], { type: 'text/plain' });
-    element.href = URL.createObjectURL(file);
-    element.download = `${song.title}.txt`;
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
+    try {
+      const element = document.createElement("a");
+      const file = new Blob([`${song.title}\n\n${song.lyrics || ""}`], { type: 'text/plain' });
+      element.href = URL.createObjectURL(file);
+      element.download = `${song.title}.txt`;
+      document.body.appendChild(element);
+      element.click();
+      document.body.removeChild(element);
+      success(`Downloaded "${song.title}.txt"`);
+    } catch (err) {
+      console.error("Failed to download", err);
+      error("Failed to download file");
+    }
   };
 
   const handleImportClick = () => {
@@ -84,10 +80,12 @@ export default function SongsLibrary() {
 
       if (normalizedTitle) {
         const song = await addSong(normalizedTitle, content);
+        success(`Imported "${normalizedTitle}"`);
         navigate(`/song/${song.id}`);
       }
     } catch (err) {
       console.error("Failed to import song", err);
+      error("Failed to import file. Please check format.");
     } finally {
       // Reset input
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -121,7 +119,11 @@ export default function SongsLibrary() {
           />
           <div className="absolute right-3 md:right-4 flex items-center gap-1 md:gap-2">
             {searchQuery && (
-              <button onClick={() => setSearchQuery("")} className="text-gray-500 hover:text-white transition-colors p-1.5">
+              <button 
+                onClick={() => setSearchQuery("")} 
+                aria-label="Clear search query"
+                className="text-gray-500 hover:text-white transition-colors p-1.5"
+              >
                 <X className="w-4 h-4" />
               </button>
             )}
@@ -134,6 +136,7 @@ export default function SongsLibrary() {
                  }}
                  className="text-gray-400 hover:text-white uppercase tracking-wider flex flex-col items-center justify-center leading-none px-1 transition-colors"
                  title={`Sorted by ${sortBy}`}
+                 aria-label={`Toggle sort order, current: ${sortBy}`}
               >
                  <ListOrdered className="w-3.5 h-3.5" />
                  <span className="text-[8px] font-bold">{sortBy === 'title' ? 'A-Z' : 'DATE'}</span>
@@ -147,6 +150,7 @@ export default function SongsLibrary() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={handleImportClick}
+            aria-label="Import song file"
             className="w-8 h-8 md:w-9 md:h-9 bg-bg-tertiary text-primary-accent flex items-center justify-center rounded-xl shadow-lg border border-border transition-all-custom"
             title="Import Song (.txt, .docx)"
           >
@@ -156,6 +160,7 @@ export default function SongsLibrary() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => setShowAddModal(true)}
+            aria-label="Add new song"
             className="w-8 h-8 md:w-9 md:h-9 bg-primary-accent text-black flex items-center justify-center rounded-xl shadow-lg shadow-primary-accent/20 border border-primary-accent/50 transition-all-custom"
             title="Add Song"
           >
@@ -202,17 +207,11 @@ export default function SongsLibrary() {
             )}
           </motion.div>
         ) : (
-          <motion.div 
-            variants={containerVariants}
-            initial="hidden"
-            animate="show"
-            className="grid grid-cols-1 gap-2 mx-auto w-full"
-          >
+          <div className="grid grid-cols-1 gap-2 mx-auto w-full">
             {displayedSongs.map(song => (
-              <motion.div 
+              <div 
                 key={song.id} 
-                variants={itemVariants}
-                className="card-elevation bg-bg-secondary border border-border rounded-xl p-3 flex items-center gap-3 group cursor-pointer active:bg-bg-tertiary"
+                className="card-elevation bg-bg-secondary border border-border rounded-xl p-3 flex items-center gap-3 group cursor-pointer active:bg-bg-tertiary transition-colors"
                 onClick={() => navigate(`/song/${song.id}`)}
               >
                 <div className="flex-1 min-w-0 pr-1">
@@ -232,6 +231,7 @@ export default function SongsLibrary() {
                       onClick={(e) => handleCopy(e, song)}
                       className="p-2 text-gray-400 hover:text-primary-accent rounded-lg transition-all-custom"
                       title="Copy Title & Lyrics"
+                      aria-label={`Copy lyrics for ${song.title}`}
                     >
                       {copiedId === song.id ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                     </button>
@@ -239,6 +239,7 @@ export default function SongsLibrary() {
                       onClick={(e) => handleDownload(e, song)}
                       className="p-2 text-gray-400 hover:text-primary-accent rounded-lg transition-all-custom"
                       title="Download as .txt"
+                      aria-label={`Download ${song.title} as text file`}
                     >
                       <Download className="w-4 h-4" />
                     </button>
@@ -248,6 +249,8 @@ export default function SongsLibrary() {
                         setSongToDelete(song);
                       }}
                       className="p-2 text-danger hover:bg-danger/10 rounded-lg transition-all-custom"
+                      title="Delete song"
+                      aria-label={`Delete ${song.title}`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -256,9 +259,9 @@ export default function SongsLibrary() {
                     <ChevronRight className="w-4 h-4" />
                   </div>
                 </div>
-              </motion.div>
+              </div>
             ))}
-          </motion.div>
+          </div>
         )}
       </div>
 
@@ -281,7 +284,11 @@ export default function SongsLibrary() {
               <div className="absolute top-0 left-0 w-full h-1 bg-primary-accent/20" />
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-xl md:text-2xl font-bold tracking-tight">Add New Song</h3>
-                <button onClick={() => setShowAddModal(false)} className="p-2 text-gray-400 hover:text-white bg-bg-tertiary rounded-full transition-colors">
+                <button 
+                  onClick={() => setShowAddModal(false)} 
+                  aria-label="Close modal"
+                  className="p-2 text-gray-400 hover:text-white bg-bg-tertiary rounded-full transition-colors"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>

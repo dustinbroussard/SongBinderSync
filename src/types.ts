@@ -4,6 +4,7 @@ export type Song = {
   lyrics: string;
   createdAt: number;
   updatedAt: number;
+  bpm?: number;
   metadata: {
     key?: string;
     tempo?: number;

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, type Key } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Play, Plus, Trash2, Search, Download, Type, FileJson, FileType, Music, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
@@ -7,6 +7,7 @@ import type { Song } from "../types";
 import { cn } from "../lib/utils";
 import jsPDF from "jspdf";
 import { motion, AnimatePresence } from "motion/react";
+import { useToast } from "../components/ToastProvider";
 import {
   DndContext,
   closestCenter,
@@ -27,7 +28,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 interface SortableSongItemProps {
-  key?: string | number;
+  key?: Key;
   id: string;
   song: Song;
   index: number;
@@ -72,6 +73,7 @@ function SortableSongItem({ id, song, index, total, onRemove, onNavigate, onMove
         <button 
           onClick={() => onMove(index, 'up')}
           disabled={index === 0}
+          aria-label={`Move ${song.title} up`}
           className="text-gray-500 hover:text-primary-accent disabled:opacity-10 transition-colors p-0.5"
         >
           <motion.div whileHover={{ y: -1 }}><ChevronUp className="w-3.5 h-3.5" /></motion.div>
@@ -79,6 +81,7 @@ function SortableSongItem({ id, song, index, total, onRemove, onNavigate, onMove
         <button 
           onClick={() => onMove(index, 'down')}
           disabled={index === total - 1}
+          aria-label={`Move ${song.title} down`}
           className="text-gray-500 hover:text-primary-accent disabled:opacity-10 transition-colors p-0.5"
         >
           <motion.div whileHover={{ y: 1 }}><ChevronDown className="w-3.5 h-3.5" /></motion.div>
@@ -97,6 +100,7 @@ function SortableSongItem({ id, song, index, total, onRemove, onNavigate, onMove
           whileHover={{ scale: 1.1 }}
           whileTap={{ scale: 0.9 }}
           onClick={() => onRemove(song.id)}
+          aria-label={`Remove ${song.title} from setlist`}
           className="w-8 h-8 flex items-center justify-center bg-danger/5 text-danger/40 hover:bg-danger hover:text-white rounded-lg transition-all-custom"
         >
           <Trash2 className="w-3.5 h-3.5" />
@@ -113,6 +117,7 @@ export default function SetlistDetail() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
+  const { success, error: toastError } = useToast();
 
   const setlist = useLiveQuery(() => db.setlists.get(id || ""), [id]);
   const allSongs = useLiveQuery(() => db.songs.toArray(), []);
@@ -178,12 +183,14 @@ export default function SetlistDetail() {
     
     if (type === 'title') {
       sorted.sort((a, b) => a.title.localeCompare(b.title));
+      success("Setlist sorted alphabetically");
     } else if (type === 'key') {
       sorted.sort((a, b) => {
         const keyA = a.metadata?.key || '';
         const keyB = b.metadata?.key || '';
         return keyA.localeCompare(keyB);
       });
+      success("Setlist sorted by key");
     }
 
     await db.setlists.update(setlist.id, {
@@ -193,59 +200,83 @@ export default function SetlistDetail() {
   };
 
   const exportTXT = () => {
-    const content = setlist.name + "\n\n" + setlistSongs.map((s, i) => `${i + 1}. ${s.title}`).join("\n");
-    const blob = new Blob([content], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${setlist.name}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setShowExportMenu(false);
+    try {
+      const content = setlist.name + "\n\n" + setlistSongs.map((s, i) => `${i + 1}. ${s.title}`).join("\n");
+      const blob = new Blob([content], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${setlist.name}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setShowExportMenu(false);
+      success("Exported TXT tracklist");
+    } catch (err) {
+      console.error(err);
+      toastError("Failed to export TXT");
+    }
   };
 
   const exportFullTXT = () => {
-    const content = setlist.name + "\n\n" + setlistSongs.map((s, i) => {
-      return `${i + 1}. ${s.title}\n\n${s.lyrics || "(No lyrics)"}\n\n-------------------\n`;
-    }).join("\n");
-    const blob = new Blob([content], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${setlist.name}_Full.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setShowExportMenu(false);
+    try {
+      const content = setlist.name + "\n\n" + setlistSongs.map((s, i) => {
+        return `${i + 1}. ${s.title}\n\n${s.lyrics || "(No lyrics)"}\n\n-------------------\n`;
+      }).join("\n");
+      const blob = new Blob([content], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${setlist.name}_Full.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setShowExportMenu(false);
+      success("Exported full lyrics TXT");
+    } catch (err) {
+      console.error(err);
+      toastError("Failed to export full TXT");
+    }
   };
 
   const exportJSON = () => {
-    const data = {
-        id: setlist.id,
-        name: setlist.name,
-        songs: setlist.songIds,
-        createdAt: new Date(setlist.createdAt).toISOString(),
-        updatedAt: new Date(setlist.updatedAt).toISOString()
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${setlist.name}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setShowExportMenu(false);
+    try {
+      const data = {
+          id: setlist.id,
+          name: setlist.name,
+          songs: setlist.songIds,
+          createdAt: new Date(setlist.createdAt).toISOString(),
+          updatedAt: new Date(setlist.updatedAt).toISOString()
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${setlist.name}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setShowExportMenu(false);
+      success("Exported setlist JSON");
+    } catch (err) {
+      console.error(err);
+      toastError("Failed to export JSON");
+    }
   };
 
   const exportPDF = () => {
-    const doc = new jsPDF();
-    doc.setFontSize(20);
-    doc.text(setlist.name, 10, 20);
-    doc.setFontSize(12);
-    setlistSongs.forEach((song, i) => {
-        doc.text(`${i + 1}. ${song.title}`, 10, 30 + (i * 10));
-    });
-    doc.save(`${setlist.name}.pdf`);
-    setShowExportMenu(false);
+    try {
+      const doc = new jsPDF();
+      doc.setFontSize(20);
+      doc.text(setlist.name, 10, 20);
+      doc.setFontSize(12);
+      setlistSongs.forEach((song, i) => {
+          doc.text(`${i + 1}. ${song.title}`, 10, 30 + (i * 10));
+      });
+      doc.save(`${setlist.name}.pdf`);
+      setShowExportMenu(false);
+      success("Exported PDF tracklist");
+    } catch (err) {
+      console.error(err);
+      toastError("Failed to export PDF");
+    }
   };
 
   const exportFullPDF = () => {
@@ -356,6 +387,7 @@ export default function SetlistDetail() {
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
             onClick={() => navigate('/setlists')}
+            aria-label="Back to setlists"
             className="p-2.5 md:p-3 bg-bg-secondary border border-border rounded-xl text-gray-400 hover:text-white transition-all-custom shadow-soft shrink-0"
           >
             <ArrowLeft className="w-4 h-4 md:w-5 md:h-5" />
@@ -364,6 +396,7 @@ export default function SetlistDetail() {
             <input
               type="text"
               defaultValue={setlist.name}
+              aria-label="Setlist name"
               onBlur={(e) => handleTitleChange(e.target.value)}
               className="bg-transparent text-lg md:text-2xl font-bold tracking-tight border-b-2 border-transparent hover:border-primary-accent/30 focus:border-primary-accent focus:outline-none transition-all-custom px-0 py-0.5 truncate"
             />
@@ -380,6 +413,7 @@ export default function SetlistDetail() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => setShowDeleteConfirm(true)}
+            aria-label="Delete setlist"
             className="p-2 md:p-2.5 bg-bg-secondary border border-border text-danger hover:text-white hover:bg-danger rounded-xl transition-all-custom shadow-soft flex items-center justify-center shrink-0"
             title="Delete Setlist"
           >
@@ -390,6 +424,8 @@ export default function SetlistDetail() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={() => setShowExportMenu(!showExportMenu)}
+              aria-label="Export options"
+              title="Export options"
               className="p-2 md:p-2.5 bg-bg-secondary border border-border text-white rounded-xl hover:bg-bg-tertiary transition-all-custom shadow-soft flex items-center justify-center shrink-0"
             >
               <Download className="w-3.5 h-3.5 md:w-4 md:h-4" />
@@ -485,6 +521,26 @@ export default function SetlistDetail() {
             <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">
               Current <span className="text-white">Setlist</span>
             </h3>
+            {setlistSongs.length > 1 && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => sortSetlist('title')}
+                  aria-label="Sort setlist alphabetically A-Z"
+                  title="Sort A-Z"
+                  className="text-[9px] font-bold text-gray-400 hover:text-white px-2 py-0.5 rounded bg-bg-secondary border border-border transition-colors uppercase tracking-wider"
+                >
+                  A-Z
+                </button>
+                <button
+                  onClick={() => sortSetlist('key')}
+                  aria-label="Sort setlist by musical key"
+                  title="Sort by Key"
+                  className="text-[9px] font-bold text-gray-400 hover:text-white px-2 py-0.5 rounded bg-bg-secondary border border-border transition-colors uppercase tracking-wider"
+                >
+                  Key
+                </button>
+              </div>
+            )}
           </div>
           
           <div className="flex-1 overflow-y-auto pr-1 space-y-2 custom-scrollbar no-scrollbar pb-4">

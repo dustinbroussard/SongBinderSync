@@ -5,7 +5,6 @@ import { v4 as uuidv4 } from "uuid";
 import { useTheme } from "./ThemeProvider";
 import { useAuth } from "./AuthProvider";
 import { 
-  getCurrentUser, 
   upsertSongToSupabase, 
   upsertSetlistToSupabase, 
   replaceSetlistSongsInSupabase,
@@ -26,8 +25,14 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   const [pushing, setPushing] = useState(false);
   const [pulling, setPulling] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const { theme, setTheme, accent, setAccent } = useTheme();
   const { user } = useAuth();
+
+  const showNotice = (text: string, type: 'success' | 'error' = 'success') => {
+    setNotice({ text, type });
+    setTimeout(() => setNotice(null), 4000);
+  };
 
   const accents = [
     { id: "green", color: "#22c55e" },
@@ -74,7 +79,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error(err);
-      alert("Failed to export backup");
+      showNotice("Failed to export backup", "error");
     }
   };
 
@@ -100,29 +105,29 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error(err);
-      alert("Failed to export setlists");
+      showNotice("Failed to export setlists", "error");
     }
   };
 
   const clearAllSongs = async () => {
     try {
       await db.songs.clear();
-      alert("All songs have been deleted.");
-      window.location.reload();
+      showNotice("All songs have been deleted.");
+      setTimeout(() => window.location.reload(), 800);
     } catch (err) {
       console.error(err);
-      alert("Failed to clear songs.");
+      showNotice("Failed to clear songs.", "error");
     }
   };
 
   const clearAllSetlists = async () => {
     try {
       await db.setlists.clear();
-      alert("All setlists have been deleted.");
-      window.location.reload();
+      showNotice("All setlists have been deleted.");
+      setTimeout(() => window.location.reload(), 800);
     } catch (err) {
       console.error(err);
-      alert("Failed to clear setlists.");
+      showNotice("Failed to clear setlists.", "error");
     }
   };
 
@@ -160,11 +165,11 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
         }
       }
       
-      alert("Import successful!");
-      window.location.reload();
+      showNotice("Import successful!");
+      setTimeout(() => window.location.reload(), 800);
     } catch (err) {
       console.error(err);
-      alert("Failed to import backup. Please make sure the JSON file is correctly formatted.");
+      showNotice("Failed to import backup. Please ensure the file is valid JSON.", "error");
     } finally {
       setImporting(false);
       if (fileInputRef.current) {
@@ -288,10 +293,20 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       <div className="bg-bg-secondary border border-border p-6 rounded-xl w-full max-w-md shadow-2xl relative max-h-[90vh] overflow-y-auto no-scrollbar">
         <div className="flex justify-between items-center mb-6 sticky top-0 bg-bg-secondary z-10 pb-2 border-b border-white/5">
           <h2 className="text-xl font-bold font-mono-tech">Settings</h2>
-          <button onClick={onClose} className="p-2 text-gray-400 hover:text-white rounded-full transition-all-custom">
+          <button 
+            onClick={onClose} 
+            aria-label="Close settings"
+            className="p-2 text-gray-400 hover:text-white rounded-full transition-all-custom"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {notice && (
+          <div className={`mb-4 p-3 rounded-lg text-xs font-bold ${notice.type === 'error' ? 'bg-danger/10 text-danger border border-danger/30' : 'bg-primary-accent/10 text-primary-accent border border-primary-accent/30'}`}>
+            {notice.text}
+          </div>
+        )}
 
         <div className="space-y-4">
           <div className="bg-bg-tertiary p-4 rounded-lg border border-white border-opacity-5">

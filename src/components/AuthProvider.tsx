@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { getSession, getCurrentUser, signOut } from "../lib/supabase";
+import { getCurrentUser, signOut } from "../lib/supabase";
 
 type AuthContextType = {
   user: any | null;
@@ -19,7 +19,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkSession = async () => {
     try {
-      const session = await getSession();
       const currentUser = await getCurrentUser();
       setUser(currentUser);
     } catch (error) {

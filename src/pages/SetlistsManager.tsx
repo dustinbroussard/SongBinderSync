@@ -1,9 +1,9 @@
 import { useState, type FormEvent, useRef, type ChangeEvent, useMemo } from "react";
-import { Plus, ListMusic, Trash2, Copy, X, Camera, Loader2, FileText, Type, Play, ChevronRight, ArrowUpDown, Clock, Calendar, SortAsc } from "lucide-react";
-import CustomIcon from "../components/CustomIcon";
+import { Plus, ListMusic, Trash2, Copy, X, Camera, Loader2, FileText, Type, Play, ChevronRight, Clock, Calendar, SortAsc } from "lucide-react";
 import { useSetlists } from "../hooks/useSetlists";
+import { useOcrProgress } from "../hooks/useOcrProgress";
 import { useNavigate } from "react-router-dom";
-import Tesseract from "tesseract.js";
+import { useToast } from "../components/ToastProvider";
 import Fuse from "fuse.js";
 import { db } from "../lib/db";
 import { v4 as uuidv4 } from "uuid";
@@ -17,7 +17,7 @@ const containerVariants = {
   show: {
     opacity: 1,
     transition: {
-      staggerChildren: 0.1
+      staggerChildren: 0.02
     }
   }
 };
@@ -29,10 +29,21 @@ const itemVariants = {
 
 export default function SetlistsManager() {
   const { setlists, addSetlist, deleteSetlist, duplicateSetlist } = useSetlists();
+  const {
+    status: ocrStatus,
+    progressPercent: ocrProgressPercent,
+    isProcessing: isOcrProcessing,
+    recognize: runOcr,
+    cancel: cancelOcr,
+    reset: resetOcr,
+  } = useOcrProgress();
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [newName, setNewName] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [docProgress, setDocProgress] = useState(0);
+  const [docStatus, setDocStatus] = useState("");
   const [pastedText, setPastedText] = useState("");
   const [importTab, setImportTab] = useState<'text' | 'photo'>('text');
   const [sortBy, setSortBy] = useState<'name' | 'createdAt' | 'updatedAt'>('updatedAt');
@@ -40,6 +51,7 @@ export default function SetlistsManager() {
   const [setlistToDelete, setSetlistToDelete] = useState<{id: string, name: string} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const { success: toastSuccess, error: toastError } = useToast();
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
@@ -105,22 +117,41 @@ export default function SetlistsManager() {
     }
   };
 
+  const isBusy = isProcessing || isOcrProcessing;
+
+  const handleCloseImportModal = () => {
+    if (isOcrProcessing) {
+      cancelOcr();
+    }
+    resetOcr();
+    setIsProcessing(false);
+    setShowImportModal(false);
+  };
+
   const processOCR = async (file: File) => {
-    setIsProcessing(true);
     try {
-      const { data: { text } } = await Tesseract.recognize(file, 'eng');
-      const lines = text.split('\n')
-        .map(l => l.trim().replace(/^[\d\.\-\*]+\s*/, ''))
+      const text = await runOcr(file);
+      setIsProcessing(true);
+      const lines = text
+        .split('\n')
+        .map(l => l.trim().replace(/^[\d.\-*]+\s*/, ''))
         .filter(l => l.length > 2);
       await processLines(lines, file.name || 'OCR Setlist');
-    } catch (err) {
+      toastSuccess("Setlist photo scanned successfully");
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
       console.error(err);
+      toastError("Failed to process setlist photo");
       setIsProcessing(false);
     }
   };
 
   const processTextFile = async (file: File) => {
     setIsProcessing(true);
+    setDocStatus("Reading file contents...");
+    setDocProgress(50);
     try {
       let text = '';
       if (file.name.toLowerCase().endsWith('.docx')) {
@@ -132,11 +163,13 @@ export default function SetlistsManager() {
       }
       
       const lines = text.split('\n')
-        .map(l => l.trim().replace(/^[\d\.\-\*]+\s*/, ''))
+        .map(l => l.trim().replace(/^[\d.\-*]+\s*/, ''))
         .filter(l => l.length > 2);
       await processLines(lines, file.name);
+      toastSuccess("Document imported successfully");
     } catch (err) {
       console.error(err);
+      toastError("Failed to process file");
       setIsProcessing(false);
     }
   };
@@ -188,6 +221,7 @@ export default function SetlistsManager() {
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setShowImportModal(true)}
+            aria-label="Import setlist from photo or text"
             className="border border-border bg-bg-secondary text-white font-bold px-3 py-2 md:px-5 md:py-3 rounded-xl hover:bg-bg-tertiary transition-all-custom flex items-center gap-1.5 md:gap-2 shadow-soft text-xs md:text-base shrink-0"
           >
             <Camera className="w-3.5 h-3.5 md:w-5 md:h-5 text-primary-accent" />
@@ -197,6 +231,7 @@ export default function SetlistsManager() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => setShowAddModal(true)}
+            aria-label="Create new setlist"
             className="bg-primary-accent text-black flex items-center justify-center rounded-full shrink-0 shadow-lg shadow-primary-accent/20 transition-all-custom w-9 h-9 md:w-11 md:h-11 border border-primary-accent/50"
             title="New Setlist"
           >
@@ -301,6 +336,7 @@ export default function SetlistsManager() {
                   }}
                   className="w-10 h-10 shrink-0 bg-primary-accent/10 text-primary-accent rounded-lg flex items-center justify-center transition-all-custom border border-primary-accent/20 active:bg-primary-accent active:text-black"
                   title="Play Setlist"
+                  aria-label={`Play setlist ${setlist.name}`}
                 >
                   <Play className="w-4 h-4 fill-current ml-0.5" />
                 </motion.button>
@@ -320,6 +356,7 @@ export default function SetlistsManager() {
                       onClick={(e) => { e.stopPropagation(); duplicateSetlist(setlist.id, `${setlist.name} (Copy)`); }}
                       className="p-2 text-gray-500 hover:text-white bg-bg-tertiary rounded-lg hover:bg-bg-quaternary transition-colors"
                       title="Duplicate"
+                      aria-label={`Duplicate setlist ${setlist.name}`}
                     >
                       <Copy className="w-4 h-4" />
                     </button>
@@ -327,6 +364,7 @@ export default function SetlistsManager() {
                       onClick={(e) => { e.stopPropagation(); setSetlistToDelete(setlist); }}
                       className="p-2 text-danger hover:bg-danger/10 rounded-lg transition-all-custom"
                       title="Delete"
+                      aria-label={`Delete setlist ${setlist.name}`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -361,7 +399,11 @@ export default function SetlistsManager() {
               <div className="absolute top-0 left-0 w-full h-1 bg-primary-accent/20" />
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-2xl font-bold tracking-tight">New Setlist</h3>
-                <button onClick={() => setShowAddModal(false)} className="p-2 text-gray-400 hover:text-white bg-bg-tertiary rounded-full transition-colors">
+                <button 
+                  onClick={() => setShowAddModal(false)} 
+                  aria-label="Close modal"
+                  className="p-2 text-gray-400 hover:text-white bg-bg-tertiary rounded-full transition-colors"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
@@ -408,7 +450,7 @@ export default function SetlistsManager() {
                initial={{ opacity: 0 }}
                animate={{ opacity: 1 }}
                exit={{ opacity: 0 }}
-               onClick={() => !isProcessing && setShowImportModal(false)}
+               onClick={() => !isBusy && handleCloseImportModal()}
                className="absolute inset-0 bg-black/80 backdrop-blur-md"
             />
             <motion.div 
@@ -422,21 +464,55 @@ export default function SetlistsManager() {
                   <h3 className="text-2xl font-bold tracking-tight">Import Setlist</h3>
                   <p className="text-sm text-gray-500 font-medium mt-1">Smartly match text to your library.</p>
                 </div>
-                {!isProcessing && (
-                  <button onClick={() => setShowImportModal(false)} className="p-2 text-gray-400 hover:text-white bg-bg-tertiary rounded-full transition-colors">
+                {!isBusy && (
+                  <button 
+                    onClick={handleCloseImportModal} 
+                    aria-label="Close modal"
+                    className="p-2 text-gray-400 hover:text-white bg-bg-tertiary rounded-full transition-colors"
+                  >
                     <X className="w-5 h-5" />
                   </button>
                 )}
               </div>
               
-              {isProcessing ? (
+              {isBusy ? (
                 <div className="flex flex-col items-center justify-center py-12">
                   <div className="relative mb-6">
                     <Loader2 className="w-12 h-12 text-primary-accent animate-spin" />
                     <div className="absolute inset-0 bg-primary-accent/10 blur-xl rounded-full" />
                   </div>
                   <p className="text-xl font-bold text-white text-center">Processing Setlist</p>
-                  <p className="text-gray-500 text-sm mt-2 text-center font-medium max-w-xs">We're using AI to read your input and match it with your library songs.</p>
+                  <p className="text-primary-accent font-semibold text-sm mt-2 text-center max-w-xs">
+                    {isOcrProcessing ? ocrStatus : (docStatus || "Reading input and matching songs...")}
+                  </p>
+
+                  {(isOcrProcessing ? ocrProgressPercent : docProgress) > 0 && (
+                    <div className="w-full max-w-xs mt-4">
+                      <div className="flex justify-between text-[11px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">
+                        <span>Progress</span>
+                        <span className="text-primary-accent">
+                          {isOcrProcessing ? ocrProgressPercent : docProgress}%
+                        </span>
+                      </div>
+                      <div className="w-full h-2 bg-bg-tertiary rounded-full overflow-hidden border border-border">
+                        <div 
+                          className="h-full bg-primary-accent transition-all duration-200 rounded-full" 
+                          style={{ width: `${Math.min(100, Math.max(0, isOcrProcessing ? ocrProgressPercent : docProgress))}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {isOcrProcessing && (
+                    <button
+                      onClick={handleCloseImportModal}
+                      className="mt-6 px-4 py-2 text-xs font-bold text-gray-400 hover:text-white bg-bg-tertiary hover:bg-bg-quaternary border border-border rounded-xl transition-all"
+                    >
+                      Cancel Analysis
+                    </button>
+                  )}
+
+                  <p className="text-gray-500 text-[11px] mt-4 text-center font-medium">Offloaded to dedicated Web Worker (non-blocking)</p>
                 </div>
               ) : (
                 <div className="flex flex-col">

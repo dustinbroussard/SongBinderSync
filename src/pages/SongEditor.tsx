@@ -186,7 +186,13 @@ export default function SongEditor() {
     if (!aiPrompt.trim()) return;
     setIsAiLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        setAiResult("Gemini API key is not configured. Please set GEMINI_API_KEY.");
+        setIsAiLoading(false);
+        return;
+      }
+      const ai = new GoogleGenAI({ apiKey });
       const prompt = `Act as an expert songwriter.
       Current Mode: ${mode}
       Song Title: ${title}
@@ -206,7 +212,7 @@ export default function SongEditor() {
       Return ONLY the requested content (lyrics) without any conversational filler or "Here is your content" preambles.`;
       
       const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }]
       });
       
@@ -397,6 +403,7 @@ export default function SongEditor() {
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
             onClick={() => navigate('/')}
+            aria-label="Back to library"
             className="p-2 md:p-3 bg-bg-secondary border border-border rounded-xl text-gray-400 hover:text-white transition-all-custom shadow-soft"
           >
             <ArrowLeft className="w-4 h-4 md:w-5 md:h-5" />
@@ -405,6 +412,7 @@ export default function SongEditor() {
             <input
               type="text"
               value={title}
+              aria-label="Song title"
               onChange={(e) => setTitle(e.target.value)}
               className="bg-transparent text-sm md:text-base leading-6 font-bold tracking-tight border-b-2 border-transparent hover:border-primary-accent/30 focus:border-primary-accent focus:outline-none transition-all-custom py-0.5 truncate w-full max-w-xl"
               placeholder="Untitled Masterpiece"
@@ -427,6 +435,7 @@ export default function SongEditor() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            aria-label="Toggle theme"
             className="p-2 md:p-3 bg-bg-secondary border border-border rounded-xl text-gray-400 hover:text-white transition-all-custom shadow-soft flex items-center justify-center shrink-0"
             title="Toggle Theme"
           >
@@ -513,7 +522,7 @@ export default function SongEditor() {
                       performanceNotes
                     }
                   }} 
-                  theme={theme}
+                  theme={theme === 'light' ? 'light' : 'dark'}
                 />
               </div>
             ) : advancedMode ? (

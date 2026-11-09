@@ -501,7 +501,7 @@ export default function PerformanceMode() {
 
   // Handle click outside for font size controls
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+    const handleClickOutside = (event: globalThis.MouseEvent | globalThis.TouchEvent) => {
       if (fontSizeRef.current && !fontSizeRef.current.contains(event.target as Node)) {
         setShowFontSizeControls(false);
       }
@@ -555,6 +555,7 @@ export default function PerformanceMode() {
               else if (mode === 'setlist') navigate(`/setlists/${id}`);
               else navigate('/');
             }}
+            aria-label="Exit performance mode"
             className="p-2 md:p-2.5 bg-bg-secondary border border-border rounded-xl text-gray-400 hover:text-white transition-all-custom shrink-0"
           >
             <ArrowLeft className="w-4 h-4 md:w-5 md:h-5 text-white" />

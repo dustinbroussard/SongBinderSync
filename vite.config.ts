@@ -86,7 +86,7 @@ export default defineConfig(({mode}) => {
             'vendor-react': ['react', 'react-dom', 'react-router', 'react-router-dom'],
             'vendor-utils': ['dexie', 'dexie-react-hooks', 'fuse.js', 'clsx', 'tailwind-merge', 'uuid'],
             'vendor-ui': ['motion', 'lucide-react'],
-            'vendor-large': ['mammoth', 'jspdf', 'tesseract.js', 'html2canvas', 'dompurify'],
+            'vendor-large': ['mammoth', 'jspdf', 'tesseract.js'],
           }
         }
       }
@@ -99,6 +99,8 @@ export default defineConfig(({mode}) => {
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      host: '0.0.0.0',
+      port: 3000,
       hmr: process.env.DISABLE_HMR !== 'true',
     },
   };

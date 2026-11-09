@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Search, Sun, Moon, Settings, Music, LogOut, LogIn } from "lucide-react";
+import { Sun, Moon, Settings, LogOut, LogIn } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
@@ -56,6 +56,7 @@ export default function MainLayout() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleSignOut}
+                aria-label="Sign out"
                 className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom"
                 title="Sign out"
               >
@@ -68,6 +69,7 @@ export default function MainLayout() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => navigate('/signin')}
+                aria-label="Sign in"
                 className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom"
                 title="Sign in"
               >
@@ -80,6 +82,8 @@ export default function MainLayout() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              aria-label="Toggle theme"
+              title="Toggle theme"
               className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom"
             >
               {theme === 'dark' ? <Sun className="w-3.5 h-3.5 md:w-4 md:h-4" /> : <Moon className="w-3.5 h-3.5 md:w-4 md:h-4" />}
@@ -90,6 +94,8 @@ export default function MainLayout() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={() => setShowSettings(true)} 
+              aria-label="Open settings"
+              title="Settings"
               className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom"
             >
               <Settings className="w-3.5 h-3.5 md:w-4 md:h-4" />
