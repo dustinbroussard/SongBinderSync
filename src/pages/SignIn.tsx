@@ -1,26 +1,46 @@
 import { motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import CustomIcon from "../components/CustomIcon";
-import { signInWithGoogle, isConfigured } from "../lib/supabase";
+import { signInWithGoogle, isConfigured, getSession } from "../lib/supabase";
+import { useAuth } from "../components/AuthProvider";
 import { useEffect, useState } from "react";
 
 export default function SignIn() {
   const navigate = useNavigate();
+  const { user, loading: authLoading } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Check for OAuth callback
-    const hash = window.location.hash;
-    if (hash && hash.includes('access_token')) {
-      setLoading(true);
-      // Let Supabase handle the session restoration
-      setTimeout(() => {
-        window.location.hash = '';
-        navigate('/');
-      }, 500);
+    if (!authLoading && user) {
+      navigate('/', { replace: true });
+      return;
     }
-  }, [navigate]);
+
+    const hasOAuthParams =
+      window.location.hash.includes('access_token') ||
+      window.location.search.includes('code=');
+
+    if (hasOAuthParams) {
+      setLoading(true);
+      getSession()
+        .then((session) => {
+          if (session?.user) {
+            if (window.location.hash || window.location.search) {
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+            navigate('/', { replace: true });
+          } else {
+            setLoading(false);
+          }
+        })
+        .catch((err) => {
+          console.error('OAuth session restoration error:', err);
+          setError('Could not complete Google sign-in. Please try again.');
+          setLoading(false);
+        });
+    }
+  }, [user, authLoading, navigate]);
 
   const handleGoogleSignIn = async () => {
     if (!isConfigured()) {

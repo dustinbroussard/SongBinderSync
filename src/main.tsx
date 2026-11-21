@@ -14,6 +14,10 @@ registerSW({
   },
 });
 
+if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+  navigator.storage.persist().catch(() => {});
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

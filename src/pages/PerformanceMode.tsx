@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useMemo, type MouseEvent, type TouchEvent 
 import { useParams, useNavigate } from "react-router-dom";
 import { Settings, ArrowLeft, Play, Pause, Sun, Moon, AArrowDown, AArrowUp, ListMusic, ChevronLeft, ChevronRight, Gauge, Music, ListOrdered, X, Minus, Plus, Sparkles, Mic, Search, PlusCircle } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "../lib/db";
+import { db, updateSongLocal } from "../lib/db";
 import type { Song } from "../types";
 import { cn } from "../lib/utils";
 import { useTheme } from "../components/ThemeProvider";
@@ -236,13 +236,10 @@ export default function PerformanceMode() {
       const currentGlobals = getGlobalSettings();
       localStorage.setItem(GLOBAL_PERF_SETTINGS, JSON.stringify({ ...currentGlobals, [key]: value }));
     } else if (currentSong) {
-      // 3. Persistent per song
-      const latestSong = await db.songs.get(currentSong.id);
-      if (latestSong) {
-        await db.songs.update(currentSong.id, {
-          metadata: { ...latestSong.metadata, [key]: value }
-        });
-      }
+      // 3. Persistent per song (atomically updates updatedAt, dirty, & outbox)
+      await updateSongLocal(currentSong.id, (latestSong) => ({
+        metadata: { ...latestSong.metadata, [key]: value }
+      }));
       
       // 4. Update the fallback for other songs (most recent)
       const currentFallback = getRecentFallback();
@@ -1078,9 +1075,10 @@ export default function PerformanceMode() {
                         onChange={(e) => {
                           const val = Number(e.target.value);
                           setBpm(val);
-                          db.songs.update(currentSong.id, { 
-                            metadata: { ...currentSong.metadata, tempo: val }
-                          });
+                          updateSongLocal(currentSong.id, (latestSong) => ({
+                            bpm: val,
+                            metadata: { ...latestSong.metadata, tempo: val }
+                          }));
                         }} 
                         className="flex-1 accent-primary-accent h-1.5 rounded-lg cursor-pointer bg-white/10 appearance-none"
                       />
@@ -1090,9 +1088,10 @@ export default function PerformanceMode() {
                         onChange={(e) => {
                           const val = Math.min(250, Math.max(40, Number(e.target.value)));
                           setBpm(val);
-                          db.songs.update(currentSong.id, { 
-                            metadata: { ...currentSong.metadata, tempo: val }
-                          });
+                          updateSongLocal(currentSong.id, (latestSong) => ({
+                            bpm: val,
+                            metadata: { ...latestSong.metadata, tempo: val }
+                          }));
                         }}
                         className="w-16 bg-transparent text-right font-mono-tech text-white font-bold text-sm focus:outline-none"
                       />

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Play, Sparkles, X, Loader2, Mic, Settings, ChevronRight, CheckCircle2, Sun, Moon, Minus, Plus, ListMusic } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "../lib/db";
+import { db, updateSongLocal, updateSetlistLocal } from "../lib/db";
 import { cn } from "../lib/utils";
 import { GoogleGenAI } from "@google/genai";
 import { motion, AnimatePresence } from "motion/react";
@@ -109,51 +109,99 @@ export default function SongEditor() {
   const [aiTargetSection, setAiTargetSection] = useState("");
   const [aiActionType, setAiActionType] = useState<'generate' | 'rephrase'>('generate');
 
-  useEffect(() => {
-    if (song) {
-      setTitle(song.title);
-      setLyrics(song.lyrics);
-      setPerformanceNotes(song.metadata?.performanceNotes || song.metadata?.productionNotes || "");
-    }
-  }, [song]);
+  type DraftSnapshot = {
+    songId: string;
+    title: string;
+    lyrics: string;
+    performanceNotes: string;
+  };
 
-  const handleSave = async () => {
-    if (!song) return;
-    setIsSaving(true);
-    
-    const lyricsToSave = lyrics;
-    const titleToSave = title;
-    const notesToSave = performanceNotes;
-
-    // Normalize content (retaining bracketed notes)
-    let processedLyrics = normalizeSmartQuotes(lyricsToSave);
-    processedLyrics = normalizeSectionLabels(normalizeLyricsBlock(processedLyrics, titleToSave));
-
-    const updatedMetadata = {
-      ...song.metadata,
-      performanceNotes: notesToSave
-    };
-
-    await db.songs.update(song.id, {
-      title: titleToSave,
+  const normalizeDraft = (draft: DraftSnapshot): DraftSnapshot => {
+    let processedLyrics = normalizeSmartQuotes(draft.lyrics);
+    processedLyrics = normalizeSectionLabels(normalizeLyricsBlock(processedLyrics, draft.title));
+    return {
+      ...draft,
       lyrics: processedLyrics,
-      metadata: updatedMetadata,
-      updatedAt: Date.now()
-    });
-    
-    // Safely update state without losing user input or cursor position
+    };
+  };
+
+  const draftsEqual = (a: DraftSnapshot | null, b: DraftSnapshot | null): boolean => {
+    if (!a || !b) return false;
+    return (
+      a.songId === b.songId &&
+      a.title === b.title &&
+      a.lyrics === b.lyrics &&
+      a.performanceNotes === b.performanceNotes
+    );
+  };
+
+  const isMountedRef = useRef(true);
+  const initializedSongIdRef = useRef<string | null>(null);
+  const activeSavingSongIdRef = useRef<string | null>(null);
+  const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestDraftRef = useRef<DraftSnapshot | null>(null);
+  const lastPersistedBySongRef = useRef<Map<string, DraftSnapshot>>(new Map());
+  const lastSubmittedRawBySongRef = useRef<Map<string, DraftSnapshot>>(new Map());
+  const queuedDraftsRef = useRef<Map<string, DraftSnapshot>>(new Map());
+  const saveRunnerPromiseRef = useRef<Promise<void> | null>(null);
+  const skipUiUpdatesInRunRef = useRef(false);
+
+  if (song && song.id === id && initializedSongIdRef.current === song.id) {
+    latestDraftRef.current = {
+      songId: song.id,
+      title,
+      lyrics,
+      performanceNotes,
+    };
+  }
+
+  const isDraftDirty = (draft: DraftSnapshot | null | undefined): draft is DraftSnapshot => {
+    if (!draft) return false;
+    const persisted = lastPersistedBySongRef.current.get(draft.songId) ?? null;
+    const submittedRaw = lastSubmittedRawBySongRef.current.get(draft.songId) ?? null;
+    if (draftsEqual(draft, persisted)) return false;
+    if (draftsEqual(draft, submittedRaw)) return false;
+    return true;
+  };
+
+  const syncEditorLyricsAfterNormalize = (
+    targetSongId: string,
+    savedRawLyrics: string,
+    processedLyrics: string
+  ) => {
+    if (
+      savedRawLyrics === processedLyrics ||
+      !isMountedRef.current ||
+      initializedSongIdRef.current !== targetSongId
+    ) {
+      return;
+    }
     setLyrics(currentLyrics => {
-      if (currentLyrics !== lyricsToSave) {
-        // User typed something new during DB update; do not overwrite
+      if (initializedSongIdRef.current !== targetSongId || currentLyrics !== savedRawLyrics) {
+        // User typed something new or switched songs during DB update; do not overwrite
         return currentLyrics;
       }
       if (currentLyrics !== processedLyrics) {
+        if (
+          latestDraftRef.current &&
+          latestDraftRef.current.songId === targetSongId &&
+          latestDraftRef.current.lyrics === savedRawLyrics
+        ) {
+          latestDraftRef.current = {
+            ...latestDraftRef.current,
+            lyrics: processedLyrics,
+          };
+        }
         const textarea = lyricsEditorRef.current;
         const selectionStart = textarea ? textarea.selectionStart : null;
         const selectionEnd = textarea ? textarea.selectionEnd : null;
 
         if (textarea && selectionStart !== null && selectionEnd !== null) {
-          setTimeout(() => {
+          if (selectionTimeoutRef.current) clearTimeout(selectionTimeoutRef.current);
+          selectionTimeoutRef.current = setTimeout(() => {
+            if (!isMountedRef.current || initializedSongIdRef.current !== targetSongId) return;
             try {
               textarea.focus();
               textarea.setSelectionRange(selectionStart, selectionEnd);
@@ -166,21 +214,258 @@ export default function SongEditor() {
       }
       return currentLyrics;
     });
+  };
 
-    setIsSaving(false);
-    setShowStatus(true);
-    setTimeout(() => setShowStatus(false), 2000);
+  const flushPendingSave = (options?: { targetSongId?: string; skipUiUpdates?: boolean }): Promise<void> => {
+    const targetSongId = options?.targetSongId;
+    if (options?.skipUiUpdates) {
+      skipUiUpdatesInRunRef.current = true;
+    }
+
+    const enqueueDirtyLatest = () => {
+      const latest = latestDraftRef.current;
+      if (!latest) return;
+      if (targetSongId && latest.songId !== targetSongId) return;
+      if (isDraftDirty(latest)) {
+        queuedDraftsRef.current.set(latest.songId, latest);
+      }
+    };
+
+    enqueueDirtyLatest();
+
+    if (saveRunnerPromiseRef.current) {
+      return saveRunnerPromiseRef.current;
+    }
+
+    const dequeueNextDraft = (): DraftSnapshot | null => {
+      const queuedEntry = queuedDraftsRef.current.entries().next();
+      if (!queuedEntry.done) {
+        const [songId, draft] = queuedEntry.value;
+        queuedDraftsRef.current.delete(songId);
+        if (isDraftDirty(draft)) {
+          return draft;
+        }
+        return dequeueNextDraft();
+      }
+
+      const latest = latestDraftRef.current;
+      if (latest && (!targetSongId || latest.songId === targetSongId) && isDraftDirty(latest)) {
+        return latest;
+      }
+
+      return null;
+    };
+
+    if (queuedDraftsRef.current.size === 0) {
+      const latest = latestDraftRef.current;
+      if (!latest || (targetSongId && latest.songId !== targetSongId) || !isDraftDirty(latest)) {
+        return Promise.resolve();
+      }
+    }
+
+    skipUiUpdatesInRunRef.current = Boolean(options?.skipUiUpdates);
+
+    const runLoop = async () => {
+      const shouldUpdateUiForSong = (songId: string) =>
+        isMountedRef.current &&
+        !skipUiUpdatesInRunRef.current &&
+        initializedSongIdRef.current === songId;
+
+      let wroteAnyForActiveSong = false;
+
+      if (isMountedRef.current && !skipUiUpdatesInRunRef.current) {
+        setIsSaving(true);
+      }
+
+      try {
+        while (true) {
+          const draftToSave = dequeueNextDraft();
+          if (!draftToSave) break;
+
+          const normalized = normalizeDraft(draftToSave);
+          lastSubmittedRawBySongRef.current.set(draftToSave.songId, draftToSave);
+
+          const persisted = lastPersistedBySongRef.current.get(normalized.songId) ?? null;
+          if (draftsEqual(normalized, persisted)) {
+            if (shouldUpdateUiForSong(draftToSave.songId)) {
+              syncEditorLyricsAfterNormalize(
+                draftToSave.songId,
+                draftToSave.lyrics,
+                normalized.lyrics
+              );
+            }
+            continue;
+          }
+
+          activeSavingSongIdRef.current = draftToSave.songId;
+          try {
+            await updateSongLocal(draftToSave.songId, (current) => ({
+              title: normalized.title,
+              lyrics: normalized.lyrics,
+              metadata: {
+                ...current.metadata,
+                performanceNotes: normalized.performanceNotes
+              }
+            }));
+          } catch (error) {
+            lastSubmittedRawBySongRef.current.delete(draftToSave.songId);
+            console.error("Failed to save song locally:", error);
+            break;
+          } finally {
+            if (activeSavingSongIdRef.current === draftToSave.songId) {
+              activeSavingSongIdRef.current = null;
+            }
+          }
+
+          lastPersistedBySongRef.current.set(normalized.songId, normalized);
+          if (initializedSongIdRef.current === normalized.songId) {
+            wroteAnyForActiveSong = true;
+          }
+
+          if (shouldUpdateUiForSong(draftToSave.songId)) {
+            syncEditorLyricsAfterNormalize(
+              draftToSave.songId,
+              draftToSave.lyrics,
+              normalized.lyrics
+            );
+          }
+        }
+
+        if (wroteAnyForActiveSong && isMountedRef.current && !skipUiUpdatesInRunRef.current) {
+          setShowStatus(true);
+          if (statusTimeoutRef.current) clearTimeout(statusTimeoutRef.current);
+          statusTimeoutRef.current = setTimeout(() => {
+            if (isMountedRef.current) setShowStatus(false);
+          }, 2000);
+        }
+      } finally {
+        activeSavingSongIdRef.current = null;
+        if (isMountedRef.current) {
+          setIsSaving(false);
+        }
+        saveRunnerPromiseRef.current = null;
+        skipUiUpdatesInRunRef.current = false;
+      }
+    };
+
+    const promise = runLoop();
+    saveRunnerPromiseRef.current = promise;
+    return promise;
   };
 
   useEffect(() => {
-    if (!song) return;
-    const timeout = setTimeout(() => {
-      if (title !== song.title || lyrics !== song.lyrics || performanceNotes !== (song.metadata?.performanceNotes || song.metadata?.productionNotes || "")) {
-        handleSave();
+    isMountedRef.current = true;
+    const handlePageHide = () => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
       }
+      void flushPendingSave({ skipUiUpdates: true });
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      isMountedRef.current = false;
+      window.removeEventListener("pagehide", handlePageHide);
+      if (statusTimeoutRef.current) {
+        clearTimeout(statusTimeoutRef.current);
+        statusTimeoutRef.current = null;
+      }
+      if (selectionTimeoutRef.current) {
+        clearTimeout(selectionTimeoutRef.current);
+        selectionTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
+      }
+      if (id) {
+        void flushPendingSave({ targetSongId: id, skipUiUpdates: true });
+      }
+    };
+  }, [id]);
+
+  useEffect(() => {
+    if (!song || song.id !== id) return;
+    const incomingNotes = song.metadata?.performanceNotes || song.metadata?.productionNotes || "";
+    const incomingSnapshot: DraftSnapshot = {
+      songId: song.id,
+      title: song.title,
+      lyrics: song.lyrics,
+      performanceNotes: incomingNotes,
+    };
+
+    if (initializedSongIdRef.current !== song.id) {
+      initializedSongIdRef.current = song.id;
+      skipUiUpdatesInRunRef.current = false;
+      lastPersistedBySongRef.current.set(song.id, incomingSnapshot);
+      const pendingQueued = queuedDraftsRef.current.get(song.id);
+      const initialDraft = pendingQueued ?? incomingSnapshot;
+      if (!pendingQueued && activeSavingSongIdRef.current !== song.id) {
+        lastSubmittedRawBySongRef.current.set(song.id, incomingSnapshot);
+      }
+      latestDraftRef.current = initialDraft;
+      setTitle(initialDraft.title);
+      setLyrics(initialDraft.lyrics);
+      setPerformanceNotes(initialDraft.performanceNotes);
+      return;
+    }
+
+    const latestForCurrent =
+      latestDraftRef.current?.songId === song.id ? latestDraftRef.current : null;
+    const persistedForCurrent = lastPersistedBySongRef.current.get(song.id) ?? null;
+
+    const hasPendingLocalEdits =
+      queuedDraftsRef.current.has(song.id) ||
+      activeSavingSongIdRef.current === song.id ||
+      (latestForCurrent !== null && !draftsEqual(latestForCurrent, persistedForCurrent));
+
+    if (!hasPendingLocalEdits && !draftsEqual(incomingSnapshot, persistedForCurrent)) {
+      lastPersistedBySongRef.current.set(song.id, incomingSnapshot);
+      lastSubmittedRawBySongRef.current.set(song.id, incomingSnapshot);
+      latestDraftRef.current = incomingSnapshot;
+      setTitle(song.title);
+      setLyrics(song.lyrics);
+      setPerformanceNotes(incomingNotes);
+    }
+  }, [song, id]);
+
+  useEffect(() => {
+    if (!song || song.id !== id || initializedSongIdRef.current !== song.id) return;
+
+    const currentDraft: DraftSnapshot = {
+      songId: song.id,
+      title,
+      lyrics,
+      performanceNotes,
+    };
+    latestDraftRef.current = currentDraft;
+
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+      debounceTimeoutRef.current = null;
+    }
+
+    if (!isDraftDirty(currentDraft)) {
+      return;
+    }
+
+    debounceTimeoutRef.current = setTimeout(() => {
+      debounceTimeoutRef.current = null;
+      void flushPendingSave({ targetSongId: song.id });
     }, 1500);
-    return () => clearTimeout(timeout);
-  }, [title, lyrics, performanceNotes, song]);
+
+    return () => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
+      }
+    };
+  }, [title, lyrics, performanceNotes, id, song?.id]);
 
   const askAI = async () => {
     if (!aiPrompt.trim()) return;
@@ -226,17 +511,12 @@ export default function SongEditor() {
 
   const toggleSetlistMembership = async (setlistId: string) => {
     if (!song) return;
-    const setlist = await db.setlists.get(setlistId);
-    if (!setlist) return;
-
-    const isMember = setlist.songIds.includes(song.id);
-    const newSongIds = isMember 
-      ? setlist.songIds.filter(sid => sid !== song.id)
-      : [...setlist.songIds, song.id];
-
-    await db.setlists.update(setlistId, {
-      songIds: newSongIds,
-      updatedAt: Date.now()
+    await updateSetlistLocal(setlistId, (setlist) => {
+      const isMember = setlist.songIds.includes(song.id);
+      const newSongIds = isMember
+        ? setlist.songIds.filter(sid => sid !== song.id)
+        : [...setlist.songIds, song.id];
+      return { songIds: newSongIds };
     });
   };
 
@@ -275,9 +555,10 @@ export default function SongEditor() {
               placeholder="Key" 
               value={song.metadata?.key || ""}
               onChange={(e) => {
-                db.songs.update(song.id, {
-                  metadata: { ...song.metadata, key: e.target.value }
-                });
+                const val = e.target.value;
+                updateSongLocal(song.id, (current) => ({
+                  metadata: { ...current.metadata, key: val }
+                }));
               }}
               className="bg-bg-primary border border-border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary-accent transition-colors" 
             />
@@ -286,9 +567,11 @@ export default function SongEditor() {
               type="number"
               value={song.metadata?.tempo || ""}
               onChange={(e) => {
-                db.songs.update(song.id, {
-                  metadata: { ...song.metadata, tempo: Number(e.target.value) }
-                });
+                const tempoNum = Number(e.target.value);
+                updateSongLocal(song.id, (current) => ({
+                  bpm: Number.isFinite(tempoNum) && tempoNum > 0 ? tempoNum : undefined,
+                  metadata: { ...current.metadata, tempo: tempoNum }
+                }));
               }}
               className="bg-bg-primary border border-border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary-accent transition-colors" 
             />
@@ -337,10 +620,9 @@ export default function SongEditor() {
               <span className="text-xs text-gray-400">Auto-Scroll</span>
               <button 
                 onClick={() => {
-                    const newVal = !(song.metadata?.autoScroll ?? false);
-                    db.songs.update(song.id, {
-                        metadata: { ...song.metadata, autoScroll: newVal }
-                    });
+                    updateSongLocal(song.id, (current) => ({
+                        metadata: { ...current.metadata, autoScroll: !(current.metadata?.autoScroll ?? false) }
+                    }));
                 }}
                 className={cn(
                     "w-10 h-5 rounded-full transition-all-custom relative",

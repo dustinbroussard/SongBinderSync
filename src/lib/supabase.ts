@@ -1,20 +1,26 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type AuthChangeEvent, type Session } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
+const PAGE_SIZE = 500;
+const UPSERT_BATCH_SIZE = 50;
+
 let client: ReturnType<typeof createClient> | null = null;
 
 export function isConfigured(): boolean {
-  return !!(
-    supabaseUrl &&
-    supabaseAnonKey
-  );
+  return !!(supabaseUrl && supabaseAnonKey);
 }
 
 export function getClient() {
   if (client || !isConfigured()) return client;
-  client = createClient(supabaseUrl, supabaseAnonKey);
+  client = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  });
   return client;
 }
 
@@ -37,22 +43,41 @@ export async function getSession() {
   return data?.session || null;
 }
 
+export async function refreshAuthSession() {
+  const supabaseClient = getClient();
+  if (!supabaseClient) return null;
+  const { data, error } = await supabaseClient.auth.refreshSession();
+  if (error) throw error;
+  return data?.session || null;
+}
+
 export async function getCurrentUser() {
   const session = await getSession();
   return session?.user || null;
 }
 
+export function subscribeToAuthChanges(
+  callback: (event: AuthChangeEvent, session: Session | null) => void
+): () => void {
+  const supabaseClient = getClient();
+  if (!supabaseClient) return () => {};
+  const { data } = supabaseClient.auth.onAuthStateChange(callback);
+  return () => {
+    data.subscription.unsubscribe();
+  };
+}
+
 export async function signInWithGoogle() {
   const supabaseClient = getClient();
   if (!supabaseClient) throw new Error('Supabase client is not configured.');
-  
+
   const { data, error } = await supabaseClient.auth.signInWithOAuth({
     provider: 'google',
     options: {
       redirectTo: getRedirectUrl(),
     },
   });
-  
+
   if (error) throw error;
   return data;
 }
@@ -60,330 +85,1071 @@ export async function signInWithGoogle() {
 export async function signOut() {
   const supabaseClient = getClient();
   if (!supabaseClient) throw new Error('Supabase client is not configured.');
-  
+
   const { error } = await supabaseClient.auth.signOut();
   if (error) throw error;
 }
 
+function isMissingColumnError(err: any, columnHints: string[] = []): boolean {
+  if (!err) return false;
+  const code = String(err.code || '').trim().toUpperCase();
+  const message = String(err.message || '').toLowerCase();
+  if (code === '42703' || code === 'PGRST204') return true;
+  if (message.includes('column') && message.includes('does not exist')) return true;
+  if (message.includes('schema cache') && columnHints.some((hint) => message.includes(hint))) return true;
+  return false;
+}
+
 // -------------------------------------------------------------
-// Song operations: Full metadata preservation & soft-delete support
+// Song operations: Conditional optimistic concurrency, fetch, soft delete
 // -------------------------------------------------------------
 
-export async function upsertSongToSupabase(song: any, userId: string) {
+const SONG_PHASE2_COLUMNS =
+  'id,user_id,title,lyrics,created_at,updated_at,legacy_id,metadata,bpm,deleted_at,server_version';
+
+export type ConditionalWriteResult<T = any> =
+  | { status: 'ok'; row: T }
+  | { status: 'conflict'; remoteRow: T }
+  | { status: 'conflict_fetch_failed'; error: string }
+  | { status: 'missing_version_mechanism'; error: string };
+
+type CloudRowFetchResult<T = any> =
+  | { status: 'ok'; row: T }
+  | { status: 'not_found' }
+  | { status: 'missing_version_mechanism'; error: string }
+  | { status: 'error'; error: string };
+
+function isUniqueViolationError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '').trim();
+  const message = String(err.message || '').toLowerCase();
+  return code === '23505' || message.includes('duplicate key value violates unique constraint');
+}
+
+export async function fetchSongByIdForUser(
+  userId: string,
+  remoteId: string
+): Promise<CloudRowFetchResult<any>> {
+  const supabaseClient = getClient();
+  if (!supabaseClient) return { status: 'error', error: 'Supabase client is not configured.' };
+  const cleanUserId = String(userId || '').trim();
+  const cleanRemoteId = String(remoteId || '').trim();
+  if (!cleanUserId || !cleanRemoteId) {
+    return { status: 'error', error: 'User id and remote song id are required.' };
+  }
+
+  const { data, error } = await (supabaseClient as any)
+    .from('songs')
+    .select(SONG_PHASE2_COLUMNS)
+    .eq('user_id', cleanUserId)
+    .eq('id', cleanRemoteId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'metadata', 'bpm', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase songs table is missing required Phase 2 columns (server_version/metadata/bpm/deleted_at).',
+      };
+    }
+    return { status: 'error', error: error.message || String(error) };
+  }
+
+  if (!data) return { status: 'not_found' };
+  const version = Number(data.server_version);
+  if (!Number.isFinite(version) || version <= 0) {
+    return {
+      status: 'missing_version_mechanism',
+      error: 'Supabase songs record is missing a valid positive server_version.',
+    };
+  }
+  return { status: 'ok', row: data };
+}
+
+export async function fetchSongByLegacyIdForUser(
+  userId: string,
+  legacyId: string
+): Promise<CloudRowFetchResult<any>> {
+  const supabaseClient = getClient();
+  if (!supabaseClient) return { status: 'error', error: 'Supabase client is not configured.' };
+  const cleanUserId = String(userId || '').trim();
+  const cleanLegacyId = String(legacyId || '').trim();
+  if (!cleanUserId || !cleanLegacyId) {
+    return { status: 'error', error: 'User id and legacy song id are required.' };
+  }
+
+  const { data, error } = await (supabaseClient as any)
+    .from('songs')
+    .select(SONG_PHASE2_COLUMNS)
+    .eq('user_id', cleanUserId)
+    .eq('legacy_id', cleanLegacyId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'metadata', 'bpm', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase songs table is missing required Phase 2 columns (server_version/metadata/bpm/deleted_at).',
+      };
+    }
+    return { status: 'error', error: error.message || String(error) };
+  }
+
+  if (!data) return { status: 'not_found' };
+  const version = Number(data.server_version);
+  if (!Number.isFinite(version) || version <= 0) {
+    return {
+      status: 'missing_version_mechanism',
+      error: 'Supabase songs record is missing a valid positive server_version.',
+    };
+  }
+  return { status: 'ok', row: data };
+}
+
+function mapCloudFetchToConflict(
+  fetched: CloudRowFetchResult<any>,
+  notFoundMessage: string
+): ConditionalWriteResult<any> {
+  if (fetched.status === 'ok') {
+    return { status: 'conflict', remoteRow: fetched.row };
+  }
+  if (fetched.status === 'missing_version_mechanism') {
+    return { status: 'missing_version_mechanism', error: fetched.error };
+  }
+  if (fetched.status === 'not_found') {
+    return { status: 'conflict_fetch_failed', error: notFoundMessage };
+  }
+  return { status: 'conflict_fetch_failed', error: fetched.error };
+}
+
+export async function insertSongToSupabase(
+  song: any,
+  userId: string
+): Promise<ConditionalWriteResult<any>> {
   const supabaseClient = getClient();
   if (!supabaseClient) throw new Error('Supabase client is not configured.');
+  if (!userId) throw new Error('User id is required for song insert.');
   if (!song?.id) throw new Error('Song is missing an id.');
-  if (!userId) throw new Error('User id is required for song upsert.');
 
+  const cleanUserId = String(userId).trim();
   const legacyId = String(song.id).trim();
-  const rawTitle = String(song.title || '').trim();
-  const rawLyrics = String(song.lyrics || '');
-  const metadata = song.metadata && typeof song.metadata === 'object' ? song.metadata : {};
-  const bpm = typeof song.bpm === 'number' ? song.bpm : null;
-  const updatedAtIso = song.updatedAt ? new Date(song.updatedAt).toISOString() : new Date().toISOString();
-
-  // Try full payload preserving all musical metadata, BPM, and active status
-  const fullPayload = {
-    user_id: String(userId).trim(),
+  const payload = {
+    user_id: cleanUserId,
     legacy_id: legacyId,
-    title: rawTitle,
-    lyrics: rawLyrics,
-    metadata,
-    bpm,
+    title: String(song.title || '').trim(),
+    lyrics: String(song.lyrics || ''),
+    metadata: song.metadata && typeof song.metadata === 'object' ? song.metadata : {},
+    bpm: typeof song.bpm === 'number' ? song.bpm : null,
     deleted_at: null,
-    updated_at: updatedAtIso,
   };
 
-  try {
-    const result = await (supabaseClient as any)
-      .from('songs')
-      .upsert(fullPayload, { onConflict: 'user_id,legacy_id' })
-      .select('id,user_id,title,lyrics,created_at,updated_at,legacy_id,metadata,bpm,deleted_at')
-      .single();
-
-    if (!result.error) {
-      return result.data || null;
-    }
-
-    // Check if error is due to missing columns (e.g. metadata, bpm, deleted_at not yet migrated)
-    const errCode = result.error.code;
-    const errMsg = (result.error.message || '').toLowerCase();
-    const isColumnMissing = errCode === '42703' || errMsg.includes('column') || errMsg.includes('metadata') || errMsg.includes('bpm') || errMsg.includes('deleted_at');
-
-    if (!isColumnMissing) {
-      console.error('[SongSync] Song upsert error', result.error);
-      throw result.error;
-    }
-
-    console.warn('[SongSync] Supabase "songs" table missing metadata/bpm/deleted_at columns. Run the Phase 1 migration SQL. Falling back to basic payload.');
-  } catch (err: any) {
-    const errMsg = (err?.message || '').toLowerCase();
-    const isColumnMissing = err?.code === '42703' || errMsg.includes('column') || errMsg.includes('metadata') || errMsg.includes('bpm');
-    if (!isColumnMissing) {
-      throw err;
-    }
-  }
-
-  // Backwards-compatible fallback if columns are not yet created in Supabase
-  const basicPayload = {
-    user_id: String(userId).trim(),
-    legacy_id: legacyId,
-    title: rawTitle,
-    lyrics: rawLyrics,
-  };
-
-  const fallbackResult = await (supabaseClient as any)
+  const { data, error } = await (supabaseClient as any)
     .from('songs')
-    .upsert(basicPayload, { onConflict: 'user_id,legacy_id' })
-    .select('id,user_id,title,lyrics,created_at,updated_at,legacy_id')
-    .single();
+    .insert(payload)
+    .select(SONG_PHASE2_COLUMNS);
 
-  if (fallbackResult.error) {
-    console.error('[SongSync] Song fallback upsert error', fallbackResult.error);
-    throw fallbackResult.error;
-  }
-  return fallbackResult.data || null;
-}
-
-export async function fetchSongsForUser(userId: string) {
-  const supabaseClient = getClient();
-  if (!supabaseClient || !userId) return [];
-
-  // Try selecting all columns including metadata, bpm, and deleted_at
-  try {
-    const result = await supabaseClient
-      .from('songs')
-      .select('id,user_id,title,lyrics,created_at,updated_at,legacy_id,metadata,bpm,deleted_at')
-      .eq('user_id', userId);
-
-    if (!result.error) {
-      return result.data || [];
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'metadata', 'bpm', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase songs table is missing Phase 2 version/metadata columns. Run supabase_phase2_migration.sql before syncing edits.',
+      };
     }
 
-    const errCode = result.error.code;
-    const errMsg = (result.error.message || '').toLowerCase();
-    const isColumnMissing = errCode === '42703' || errMsg.includes('column') || errMsg.includes('metadata') || errMsg.includes('bpm');
-
-    if (!isColumnMissing) {
-      console.error('[SongSync] Songs fetch error', result.error);
-      throw result.error;
+    if (isUniqueViolationError(error)) {
+      const fetched = await fetchSongByLegacyIdForUser(cleanUserId, legacyId);
+      return mapCloudFetchToConflict(
+        fetched,
+        `Song "${song.title || legacyId}" collided with an existing cloud record that could not be fetched.`
+      );
     }
-  } catch (err) {
-    // Column missing; fall through to basic select
+
+    console.error('[SongSync] Song insert error', error);
+    throw error;
   }
 
-  // Fallback select for older schema without metadata/bpm/deleted_at columns
-  const fallbackResult = await supabaseClient
-    .from('songs')
-    .select('id,user_id,title,lyrics,created_at,updated_at,legacy_id')
-    .eq('user_id', userId);
-
-  if (fallbackResult.error) {
-    console.error('[SongSync] Songs fallback fetch error', fallbackResult.error);
-    throw fallbackResult.error;
+  const insertedRow = data?.[0];
+  const newVersion = Number(insertedRow?.server_version);
+  if (!insertedRow?.id || !Number.isFinite(newVersion) || newVersion <= 0) {
+    return {
+      status: 'missing_version_mechanism',
+      error:
+        'Supabase songs insert did not return a valid positive server_version. Ensure Phase 2 server_version defaults/triggers are installed.',
+    };
   }
-  return fallbackResult.data || [];
+
+  return { status: 'ok', row: insertedRow };
 }
 
-/**
- * Propagates a song deletion tombstone to Supabase so other devices know the song was deleted.
- */
-export async function markSongDeletedInSupabase(legacyId: string, deletedAt: number, userId: string) {
-  const supabaseClient = getClient();
-  if (!supabaseClient || !legacyId || !userId) return;
-
-  const deletedIso = new Date(deletedAt).toISOString();
-
-  try {
-    // Attempt soft delete with tombstone timestamp
-    const { error } = await (supabaseClient as any)
-      .from('songs')
-      .update({ deleted_at: deletedIso })
-      .eq('user_id', userId)
-      .eq('legacy_id', legacyId);
-
-    if (!error) return;
-
-    // If deleted_at column is missing, perform hard delete as fallback
-    const errMsg = (error.message || '').toLowerCase();
-    if (error.code === '42703' || errMsg.includes('column') || errMsg.includes('deleted_at')) {
-      await (supabaseClient as any)
-        .from('songs')
-        .delete()
-        .eq('user_id', userId)
-        .eq('legacy_id', legacyId);
-    }
-  } catch (err) {
-    console.warn('[SongSync] Error marking song deleted in Supabase:', err);
-  }
-}
-
-// -------------------------------------------------------------
-// Setlist operations: Atomic updates, song order, & soft-deletes
-// -------------------------------------------------------------
-
-export async function upsertSetlistToSupabase(setlist: any, userId: string) {
+export async function updateSongConditionalInSupabase(
+  song: any,
+  userId: string
+): Promise<ConditionalWriteResult<any>> {
   const supabaseClient = getClient();
   if (!supabaseClient) throw new Error('Supabase client is not configured.');
-  if (!setlist?.id) throw new Error('Setlist is missing an id.');
-  if (!userId) throw new Error('User id is required for setlist upsert.');
+  if (!userId) throw new Error('User id is required for song update.');
+  if (!song?.id) throw new Error('Song is missing an id.');
 
-  const legacyId = String(setlist.id).trim();
-  const rawName = String(setlist.name || '').trim();
-  const updatedAtIso = setlist.updatedAt ? new Date(setlist.updatedAt).toISOString() : new Date().toISOString();
+  const cleanUserId = String(userId).trim();
+  const remoteId = song.remoteId ? String(song.remoteId).trim() : '';
+  const baseVersion = Number(song.baseVersion);
 
-  // Upsert setlist record without writing song_ids.
-  // The replace_setlist_songs RPC (or fallback) is the authoritative writer of song_ids alongside relational links.
-  const fullPayload = {
-    user_id: String(userId).trim(),
-    legacy_id: legacyId,
-    name: rawName,
+  if (!remoteId) {
+    return insertSongToSupabase(song, cleanUserId);
+  }
+
+  if (!Number.isFinite(baseVersion) || baseVersion <= 0) {
+    const fetched = await fetchSongByIdForUser(cleanUserId, remoteId);
+    return mapCloudFetchToConflict(
+      fetched,
+      `Song "${song.title || song.id}" is missing a valid baseVersion and its remote record could not be fetched.`
+    );
+  }
+
+  const updatePayload = {
+    title: String(song.title || '').trim(),
+    lyrics: String(song.lyrics || ''),
+    metadata: song.metadata && typeof song.metadata === 'object' ? song.metadata : {},
+    bpm: typeof song.bpm === 'number' ? song.bpm : null,
     deleted_at: null,
-    updated_at: updatedAtIso,
   };
 
-  try {
-    const result = await (supabaseClient as any)
-      .from('setlists')
-      .upsert(fullPayload, { onConflict: 'user_id,legacy_id' })
-      .select('id,user_id,name,created_at,updated_at,legacy_id,deleted_at')
-      .single();
+  const { data, error } = await (supabaseClient as any)
+    .from('songs')
+    .update(updatePayload)
+    .eq('user_id', cleanUserId)
+    .eq('id', remoteId)
+    .eq('server_version', baseVersion)
+    .select(SONG_PHASE2_COLUMNS);
 
-    if (!result.error) {
-      return result.data || null;
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'metadata', 'bpm', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase songs table is missing Phase 2 version/metadata columns. Run supabase_phase2_migration.sql before syncing edits.',
+      };
     }
-
-    const errCode = result.error.code;
-    const errMsg = (result.error.message || '').toLowerCase();
-    const isColumnMissing = errCode === '42703' || errMsg.includes('column') || errMsg.includes('deleted_at');
-
-    if (!isColumnMissing) {
-      console.error('[SongSync] Setlist upsert error', result.error);
-      throw result.error;
-    }
-
-    console.warn('[SongSync] Supabase "setlists" table missing deleted_at column. Falling back to basic payload.');
-  } catch (err: any) {
-    const errMsg = (err?.message || '').toLowerCase();
-    const isColumnMissing = err?.code === '42703' || errMsg.includes('column') || errMsg.includes('deleted_at');
-    if (!isColumnMissing) throw err;
+    console.error('[SongSync] Song conditional update error', error);
+    throw error;
   }
 
-  // Backwards-compatible fallback if columns are not yet in Supabase
-  const basicPayload = {
-    user_id: String(userId).trim(),
-    legacy_id: legacyId,
-    name: rawName,
-  };
-
-  const fallbackResult = await (supabaseClient as any)
-    .from('setlists')
-    .upsert(basicPayload, { onConflict: 'user_id,legacy_id' })
-    .select('id,user_id,name,created_at,updated_at,legacy_id')
-    .single();
-
-  if (fallbackResult.error) {
-    console.error('[SongSync] Setlist fallback upsert error', fallbackResult.error);
-    throw fallbackResult.error;
+  if (!data || data.length === 0) {
+    const fetched = await fetchSongByIdForUser(cleanUserId, remoteId);
+    return mapCloudFetchToConflict(
+      fetched,
+      `Song "${song.title || song.id}" failed optimistic concurrency check at version ${baseVersion}, and the current remote row could not be retrieved.`
+    );
   }
-  return fallbackResult.data || null;
+
+  const updatedRow = data[0];
+  const newVersion = Number(updatedRow?.server_version);
+  if (!Number.isFinite(newVersion) || newVersion <= 0 || newVersion === baseVersion) {
+    return {
+      status: 'missing_version_mechanism',
+      error:
+        'Supabase songs update did not advance server_version. Ensure the Phase 2 server_version trigger is active before trusting concurrent writes.',
+    };
+  }
+
+  return { status: 'ok', row: updatedRow };
 }
 
-export async function fetchSetlistsForUser(userId: string) {
+export async function saveSongWithConcurrency(
+  song: any,
+  userId: string
+): Promise<ConditionalWriteResult<any>> {
+  if (!song?.id) throw new Error('Song is missing an id.');
+  if (song.remoteId) {
+    return updateSongConditionalInSupabase(song, userId);
+  }
+  return insertSongToSupabase(song, userId);
+}
+
+export interface FetchSongsResult {
+  rows: any[];
+  hasExtendedColumns: boolean;
+  hasServerVersion: boolean;
+  isIncremental: boolean;
+  isComplete: boolean;
+}
+
+export async function fetchSongsForUser(
+  userId: string,
+  _options?: { sinceVersion?: number }
+): Promise<FetchSongsResult> {
   const supabaseClient = getClient();
-  if (!supabaseClient || !userId) return [];
+  if (!supabaseClient || !userId) {
+    return {
+      rows: [],
+      hasExtendedColumns: false,
+      hasServerVersion: false,
+      isIncremental: false,
+      isComplete: false,
+    };
+  }
+
+  // Retrieve the complete cloud snapshot across all pages using immutable PK ordering
+  // so concurrent server_version updates cannot shift rows across page boundaries.
+  const fetchAllPages = async (selectColumns: string) => {
+    const allRows: any[] = [];
+    const seenIds = new Set<string>();
+    let offset = 0;
+
+    while (true) {
+      const { data, error } = await (supabaseClient as any)
+        .from('songs')
+        .select(selectColumns)
+        .eq('user_id', userId)
+        .order('id', { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1);
+
+      if (error) return { data: null, error };
+
+      const page = data || [];
+      for (const row of page) {
+        const rowId = String(row?.id || '').trim();
+        if (rowId && seenIds.has(rowId)) continue;
+        if (rowId) seenIds.add(rowId);
+        allRows.push(row);
+      }
+
+      if (page.length < PAGE_SIZE) break;
+      offset += PAGE_SIZE;
+    }
+
+    return { data: allRows, error: null };
+  };
+
+  // 1. Try Phase 2 schema (with server_version + metadata + bpm + deleted_at)
+  const p2 = await fetchAllPages(
+    'id,user_id,title,lyrics,created_at,updated_at,legacy_id,metadata,bpm,deleted_at,server_version'
+  );
+  if (!p2.error) {
+    return {
+      rows: p2.data || [],
+      hasExtendedColumns: true,
+      hasServerVersion: true,
+      isIncremental: false,
+      isComplete: true,
+    };
+  }
+  if (!isMissingColumnError(p2.error, ['server_version', 'metadata', 'bpm', 'deleted_at'])) {
+    console.error('[SongSync] Songs fetch error', p2.error);
+    throw p2.error;
+  }
+
+  // 2. Try Phase 1 schema (metadata, bpm, deleted_at without server_version)
+  const p1 = await fetchAllPages(
+    'id,user_id,title,lyrics,created_at,updated_at,legacy_id,metadata,bpm,deleted_at'
+  );
+  if (!p1.error) {
+    return {
+      rows: p1.data || [],
+      hasExtendedColumns: true,
+      hasServerVersion: false,
+      isIncremental: false,
+      isComplete: true,
+    };
+  }
+  if (!isMissingColumnError(p1.error, ['metadata', 'bpm', 'deleted_at'])) {
+    console.error('[SongSync] Songs Phase 1 fetch error', p1.error);
+    throw p1.error;
+  }
+
+  // 3. Fallback to legacy schema (paginated)
+  const legacy = await fetchAllPages('id,user_id,title,lyrics,created_at,updated_at,legacy_id');
+  if (legacy.error) {
+    console.error('[SongSync] Songs fallback fetch error', legacy.error);
+    throw legacy.error;
+  }
+
+  return {
+    rows: legacy.data || [],
+    hasExtendedColumns: false,
+    hasServerVersion: false,
+    isIncremental: false,
+    isComplete: true,
+  };
+}
+
+export async function fetchSongsByIdsForUser(
+  userId: string,
+  songUuids: string[],
+  hasExtendedColumns: boolean,
+  hasServerVersion: boolean
+): Promise<any[]> {
+  const supabaseClient = getClient();
+  const cleanIds = Array.from(new Set(songUuids.map((id) => String(id || '').trim()).filter(Boolean)));
+  if (!supabaseClient || !userId || cleanIds.length === 0) return [];
+
+  const selectColumns = hasServerVersion
+    ? 'id,user_id,title,lyrics,created_at,updated_at,legacy_id,metadata,bpm,deleted_at,server_version'
+    : hasExtendedColumns
+    ? 'id,user_id,title,lyrics,created_at,updated_at,legacy_id,metadata,bpm,deleted_at'
+    : 'id,user_id,title,lyrics,created_at,updated_at,legacy_id';
+
+  const rows: any[] = [];
+  for (let i = 0; i < cleanIds.length; i += 100) {
+    const chunk = cleanIds.slice(i, i + 100);
+    const { data, error } = await (supabaseClient as any)
+      .from('songs')
+      .select(selectColumns)
+      .eq('user_id', userId)
+      .in('id', chunk);
+
+    if (error) {
+      console.error('[SongSync] Failed fetching referenced songs by ID:', error);
+      throw error;
+    }
+    if (data?.length) rows.push(...data);
+  }
+
+  return rows;
+}
+
+export type ConditionalDeleteResult<T = any> =
+  | { status: 'deleted'; row: T }
+  | { status: 'already_deleted'; row?: T }
+  | { status: 'conflict'; remoteRow: T }
+  | { status: 'fetch_failed'; error: string }
+  | { status: 'missing_version_mechanism'; error: string };
+
+export type DeletionInspectResult<T = any> =
+  | { status: 'not_found' }
+  | { status: 'already_deleted'; row: T }
+  | { status: 'active_found'; remoteRow: T }
+  | { status: 'fetch_failed'; error: string }
+  | { status: 'missing_version_mechanism'; error: string };
+
+export async function inspectSongDeletionCandidateInSupabase(
+  params: { legacyId: string; remoteId?: string },
+  userId: string
+): Promise<DeletionInspectResult<any>> {
+  const cleanUserId = String(userId || '').trim();
+  const cleanRemoteId = params.remoteId ? String(params.remoteId).trim() : '';
+  const cleanLegacyId = params.legacyId ? String(params.legacyId).trim() : '';
+
+  if (!cleanUserId || (!cleanRemoteId && !cleanLegacyId)) {
+    return { status: 'fetch_failed', error: 'User id and song identifier are required.' };
+  }
+
+  let fetched = cleanRemoteId
+    ? await fetchSongByIdForUser(cleanUserId, cleanRemoteId)
+    : await fetchSongByLegacyIdForUser(cleanUserId, cleanLegacyId);
+
+  if (fetched.status === 'not_found' && cleanRemoteId && cleanLegacyId) {
+    fetched = await fetchSongByLegacyIdForUser(cleanUserId, cleanLegacyId);
+  }
+
+  if (fetched.status === 'missing_version_mechanism') {
+    return { status: 'missing_version_mechanism', error: fetched.error };
+  }
+  if (fetched.status === 'error') {
+    return { status: 'fetch_failed', error: fetched.error };
+  }
+  if (fetched.status === 'not_found') {
+    return { status: 'not_found' };
+  }
+
+  if (fetched.row?.deleted_at) {
+    return { status: 'already_deleted', row: fetched.row };
+  }
+  return { status: 'active_found', remoteRow: fetched.row };
+}
+
+export async function softDeleteSongConditionalInSupabase(
+  params: { legacyId: string; remoteId?: string; baseVersion?: number; deletedAt?: number },
+  userId: string
+): Promise<ConditionalDeleteResult<any>> {
+  const supabaseClient = getClient();
+  if (!supabaseClient) {
+    return { status: 'fetch_failed', error: 'Supabase client is not configured.' };
+  }
+  const cleanUserId = String(userId || '').trim();
+  const cleanLegacyId = String(params.legacyId || '').trim();
+  const cleanRemoteId = params.remoteId ? String(params.remoteId).trim() : '';
+  const baseVersion = Number(params.baseVersion);
+
+  if (!cleanUserId || !cleanLegacyId) {
+    return { status: 'fetch_failed', error: 'User id and song id are required for deletion.' };
+  }
+
+  if (!cleanRemoteId || !Number.isFinite(baseVersion) || baseVersion <= 0) {
+    const inspected = await inspectSongDeletionCandidateInSupabase(
+      { legacyId: cleanLegacyId, remoteId: cleanRemoteId },
+      cleanUserId
+    );
+    if (inspected.status === 'not_found') return { status: 'already_deleted' };
+    if (inspected.status === 'already_deleted') {
+      return { status: 'already_deleted', row: inspected.row };
+    }
+    if (inspected.status === 'active_found') {
+      return { status: 'conflict', remoteRow: inspected.remoteRow };
+    }
+    return inspected;
+  }
+
+  const deletedIso = new Date(params.deletedAt || Date.now()).toISOString();
+  const { data, error } = await (supabaseClient as any)
+    .from('songs')
+    .update({ deleted_at: deletedIso })
+    .eq('user_id', cleanUserId)
+    .eq('id', cleanRemoteId)
+    .eq('server_version', baseVersion)
+    .is('deleted_at', null)
+    .select(SONG_PHASE2_COLUMNS);
+
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'metadata', 'bpm', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase songs table is missing Phase 2 deleted_at/server_version columns. Run supabase_phase2_migration.sql before syncing deletions.',
+      };
+    }
+    console.error('[SongSync] Song conditional soft-delete error', error);
+    return { status: 'fetch_failed', error: error.message || String(error) };
+  }
+
+  if (!data || data.length === 0) {
+    const inspected = await inspectSongDeletionCandidateInSupabase(
+      { legacyId: cleanLegacyId, remoteId: cleanRemoteId },
+      cleanUserId
+    );
+    if (inspected.status === 'not_found') return { status: 'already_deleted' };
+    if (inspected.status === 'already_deleted') {
+      return { status: 'already_deleted', row: inspected.row };
+    }
+    if (inspected.status === 'active_found') {
+      return { status: 'conflict', remoteRow: inspected.remoteRow };
+    }
+    return inspected;
+  }
+
+  const deletedRow = data[0];
+  const newVersion = Number(deletedRow?.server_version);
+  if (!deletedRow?.deleted_at || !Number.isFinite(newVersion) || newVersion <= 0 || newVersion === baseVersion) {
+    return {
+      status: 'missing_version_mechanism',
+      error:
+        'Supabase songs soft-delete did not advance server_version or record deleted_at. Ensure the Phase 2 server_version trigger is active.',
+    };
+  }
+
+  return { status: 'deleted', row: deletedRow };
+}
+
+// -------------------------------------------------------------
+// Setlist operations: Conditional optimistic concurrency, fetch, atomic RPC
+// -------------------------------------------------------------
+
+const SETLIST_PHASE2_COLUMNS =
+  'id,user_id,name,created_at,updated_at,legacy_id,song_ids,deleted_at,server_version';
+
+async function fetchOrderedLinksForSingleSetlist(
+  supabaseClient: any,
+  userId: string,
+  setlistRemoteId: string
+): Promise<{ songIds: string[]; error: string | null }> {
+  const fetchAllPages = async (includeSurrogateId: boolean) => {
+    const rows: any[] = [];
+    const seenLinkIds = new Set<string>();
+    let offset = 0;
+
+    while (true) {
+      let query = supabaseClient
+        .from('setlist_songs')
+        .select(includeSurrogateId ? 'id,setlist_id,song_id,position' : 'setlist_id,song_id,position')
+        .eq('user_id', userId)
+        .eq('setlist_id', setlistRemoteId)
+        .order('position', { ascending: true })
+        .order('song_id', { ascending: true });
+
+      if (includeSurrogateId) {
+        query = query.order('id', { ascending: true });
+      }
+
+      const { data, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+      if (error) return { data: null, error };
+
+      const page = data || [];
+      for (const row of page) {
+        if (includeSurrogateId && row?.id !== undefined && row?.id !== null) {
+          const linkId = String(row.id);
+          if (seenLinkIds.has(linkId)) continue;
+          seenLinkIds.add(linkId);
+        }
+        rows.push(row);
+      }
+
+      if (page.length < PAGE_SIZE) break;
+      offset += PAGE_SIZE;
+    }
+
+    return { data: rows, error: null };
+  };
+
+  let relResult = await fetchAllPages(true);
+  if (relResult.error && isMissingColumnError(relResult.error, ['id'])) {
+    relResult = await fetchAllPages(false);
+  }
+
+  if (relResult.error) {
+    return { songIds: [], error: relResult.error.message || String(relResult.error) };
+  }
+
+  const linkRows = [...(relResult.data || [])];
+  linkRows.sort((a: any, b: any) => {
+    const posLeft = Number.isFinite(Number(a?.position)) ? Number(a.position) : 0;
+    const posRight = Number.isFinite(Number(b?.position)) ? Number(b.position) : 0;
+    if (posLeft !== posRight) return posLeft - posRight;
+
+    const songCmp = String(a?.song_id || '').localeCompare(String(b?.song_id || ''));
+    if (songCmp !== 0) return songCmp;
+
+    return String(a?.id ?? '').localeCompare(String(b?.id ?? ''));
+  });
+
+  return {
+    songIds: linkRows.map((r: any) => String(r?.song_id || '').trim()).filter(Boolean),
+    error: null,
+  };
+}
+
+async function fetchSetlistWithLinksByFilter(
+  userId: string,
+  filterColumn: 'id' | 'legacy_id',
+  filterValue: string
+): Promise<CloudRowFetchResult<any>> {
+  const supabaseClient = getClient();
+  if (!supabaseClient) return { status: 'error', error: 'Supabase client is not configured.' };
+  const cleanUserId = String(userId || '').trim();
+  const cleanVal = String(filterValue || '').trim();
+  if (!cleanUserId || !cleanVal) {
+    return { status: 'error', error: 'User id and setlist identifier are required.' };
+  }
+
+  const { data: row, error } = await (supabaseClient as any)
+    .from('setlists')
+    .select(SETLIST_PHASE2_COLUMNS)
+    .eq('user_id', cleanUserId)
+    .eq(filterColumn, cleanVal)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'song_ids', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase setlists table is missing required Phase 2 columns (server_version/song_ids/deleted_at).',
+      };
+    }
+    return { status: 'error', error: error.message || String(error) };
+  }
+
+  if (!row) return { status: 'not_found' };
+  const version = Number(row.server_version);
+  if (!Number.isFinite(version) || version <= 0) {
+    return {
+      status: 'missing_version_mechanism',
+      error: 'Supabase setlists record is missing a valid positive server_version.',
+    };
+  }
+
+  if (row.deleted_at) {
+    return {
+      status: 'ok',
+      row: { ...row, songs: [], relationshipsLoaded: false },
+    };
+  }
+
+  const linksRes = await fetchOrderedLinksForSingleSetlist(supabaseClient, cleanUserId, String(row.id));
+  if (linksRes.error) {
+    return {
+      status: 'error',
+      error: `Fetched conflicting setlist metadata, but failed to load setlist_songs links: ${linksRes.error}`,
+    };
+  }
+
+  return {
+    status: 'ok',
+    row: {
+      ...row,
+      songs: linksRes.songIds,
+      relationshipsLoaded: true,
+    },
+  };
+}
+
+export async function fetchSetlistWithLinksById(
+  userId: string,
+  remoteSetlistId: string
+): Promise<CloudRowFetchResult<any>> {
+  return fetchSetlistWithLinksByFilter(userId, 'id', remoteSetlistId);
+}
+
+export async function fetchSetlistWithLinksByLegacyId(
+  userId: string,
+  legacyId: string
+): Promise<CloudRowFetchResult<any>> {
+  return fetchSetlistWithLinksByFilter(userId, 'legacy_id', legacyId);
+}
+
+export async function insertSetlistMetadataToSupabase(
+  setlist: any,
+  userId: string
+): Promise<ConditionalWriteResult<any>> {
+  const supabaseClient = getClient();
+  if (!supabaseClient) throw new Error('Supabase client is not configured.');
+  if (!userId) throw new Error('User id is required for setlist insert.');
+  if (!setlist?.id) throw new Error('Setlist is missing an id.');
+
+  const cleanUserId = String(userId).trim();
+  const legacyId = String(setlist.id).trim();
+  // Do NOT write song_ids here: replace_setlist_songs RPC is authoritative for ordering
+  const payload = {
+    user_id: cleanUserId,
+    legacy_id: legacyId,
+    name: String(setlist.name || '').trim(),
+    deleted_at: null,
+  };
+
+  const { data, error } = await (supabaseClient as any)
+    .from('setlists')
+    .insert(payload)
+    .select(SETLIST_PHASE2_COLUMNS);
+
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'song_ids', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase setlists table is missing Phase 2 version/deleted_at columns. Run supabase_phase2_migration.sql before syncing edits.',
+      };
+    }
+
+    if (isUniqueViolationError(error)) {
+      const fetched = await fetchSetlistWithLinksByLegacyId(cleanUserId, legacyId);
+      return mapCloudFetchToConflict(
+        fetched,
+        `Setlist "${setlist.name || legacyId}" collided with an existing cloud record that could not be fetched.`
+      );
+    }
+
+    console.error('[SongSync] Setlist insert error', error);
+    throw error;
+  }
+
+  const insertedRow = data?.[0];
+  const newVersion = Number(insertedRow?.server_version);
+  if (!insertedRow?.id || !Number.isFinite(newVersion) || newVersion <= 0) {
+    return {
+      status: 'missing_version_mechanism',
+      error:
+        'Supabase setlists insert did not return a valid positive server_version. Ensure Phase 2 server_version defaults/triggers are installed.',
+    };
+  }
+
+  return { status: 'ok', row: insertedRow };
+}
+
+export async function updateSetlistMetadataConditionalInSupabase(
+  setlist: any,
+  userId: string
+): Promise<ConditionalWriteResult<any>> {
+  const supabaseClient = getClient();
+  if (!supabaseClient) throw new Error('Supabase client is not configured.');
+  if (!userId) throw new Error('User id is required for setlist update.');
+  if (!setlist?.id) throw new Error('Setlist is missing an id.');
+
+  const cleanUserId = String(userId).trim();
+  const remoteId = setlist.remoteId ? String(setlist.remoteId).trim() : '';
+  const baseVersion = Number(setlist.baseVersion);
+
+  if (!remoteId) {
+    return insertSetlistMetadataToSupabase(setlist, cleanUserId);
+  }
+
+  if (!Number.isFinite(baseVersion) || baseVersion <= 0) {
+    const fetched = await fetchSetlistWithLinksById(cleanUserId, remoteId);
+    return mapCloudFetchToConflict(
+      fetched,
+      `Setlist "${setlist.name || setlist.id}" is missing a valid baseVersion and its remote record could not be fetched.`
+    );
+  }
+
+  // Do NOT write song_ids here: replace_setlist_songs RPC is authoritative for ordering
+  const updatePayload = {
+    name: String(setlist.name || '').trim(),
+    deleted_at: null,
+  };
+
+  const { data, error } = await (supabaseClient as any)
+    .from('setlists')
+    .update(updatePayload)
+    .eq('user_id', cleanUserId)
+    .eq('id', remoteId)
+    .eq('server_version', baseVersion)
+    .select(SETLIST_PHASE2_COLUMNS);
+
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'song_ids', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase setlists table is missing Phase 2 version/deleted_at columns. Run supabase_phase2_migration.sql before syncing edits.',
+      };
+    }
+    console.error('[SongSync] Setlist conditional update error', error);
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    const fetched = await fetchSetlistWithLinksById(cleanUserId, remoteId);
+    return mapCloudFetchToConflict(
+      fetched,
+      `Setlist "${setlist.name || setlist.id}" failed optimistic concurrency check at version ${baseVersion}, and the current remote row could not be retrieved.`
+    );
+  }
+
+  const updatedRow = data[0];
+  const newVersion = Number(updatedRow?.server_version);
+  if (!Number.isFinite(newVersion) || newVersion <= 0 || newVersion === baseVersion) {
+    return {
+      status: 'missing_version_mechanism',
+      error:
+        'Supabase setlists update did not advance server_version. Ensure the Phase 2 server_version trigger is active before trusting concurrent writes.',
+    };
+  }
+
+  return { status: 'ok', row: updatedRow };
+}
+
+export async function saveSetlistMetadataWithConcurrency(
+  setlist: any,
+  userId: string
+): Promise<ConditionalWriteResult<any>> {
+  if (!setlist?.id) throw new Error('Setlist is missing an id.');
+  if (setlist.remoteId) {
+    return updateSetlistMetadataConditionalInSupabase(setlist, userId);
+  }
+  return insertSetlistMetadataToSupabase(setlist, userId);
+}
+
+export interface FetchSetlistsResult {
+  rows: any[];
+  hasExtendedColumns: boolean;
+  hasServerVersion: boolean;
+  isIncremental: boolean;
+  isComplete: boolean;
+  relationshipsComplete: boolean;
+}
+
+export async function fetchSetlistsForUser(
+  userId: string,
+  _options?: { sinceVersion?: number }
+): Promise<FetchSetlistsResult> {
+  const supabaseClient = getClient();
+  if (!supabaseClient || !userId) {
+    return {
+      rows: [],
+      hasExtendedColumns: false,
+      hasServerVersion: false,
+      isIncremental: false,
+      isComplete: false,
+      relationshipsComplete: false,
+    };
+  }
+
+  // Retrieve complete setlist snapshot using immutable PK ordering so concurrent writes
+  // cannot shift rows across paginated slices.
+  const fetchAllSetlistPages = async (selectColumns: string) => {
+    const allRows: any[] = [];
+    const seenIds = new Set<string>();
+    let offset = 0;
+
+    while (true) {
+      const { data, error } = await (supabaseClient as any)
+        .from('setlists')
+        .select(selectColumns)
+        .eq('user_id', userId)
+        .order('id', { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1);
+
+      if (error) return { data: null, error };
+
+      const page = data || [];
+      for (const row of page) {
+        const rowId = String(row?.id || '').trim();
+        if (rowId && seenIds.has(rowId)) continue;
+        if (rowId) seenIds.add(rowId);
+        allRows.push(row);
+      }
+
+      if (page.length < PAGE_SIZE) break;
+      offset += PAGE_SIZE;
+    }
+
+    return { data: allRows, error: null };
+  };
 
   let setlistsData: any[] = [];
+  let hasExtendedColumns = false;
+  let hasServerVersion = false;
 
-  // Try selecting full columns including song_ids and deleted_at
-  try {
-    const result = await supabaseClient
-      .from('setlists')
-      .select('id,user_id,name,created_at,updated_at,legacy_id,song_ids,deleted_at')
-      .eq('user_id', userId);
-
-    if (!result.error) {
-      setlistsData = result.data || [];
+  const p2 = await fetchAllSetlistPages(
+    'id,user_id,name,created_at,updated_at,legacy_id,song_ids,deleted_at,server_version'
+  );
+  if (!p2.error) {
+    setlistsData = p2.data || [];
+    hasExtendedColumns = true;
+    hasServerVersion = true;
+  } else if (!isMissingColumnError(p2.error, ['server_version', 'song_ids', 'deleted_at'])) {
+    console.error('[SongSync] Setlists fetch error', p2.error);
+    throw p2.error;
+  } else {
+    const p1 = await fetchAllSetlistPages(
+      'id,user_id,name,created_at,updated_at,legacy_id,song_ids,deleted_at'
+    );
+    if (!p1.error) {
+      setlistsData = p1.data || [];
+      hasExtendedColumns = true;
+    } else if (!isMissingColumnError(p1.error, ['song_ids', 'deleted_at'])) {
+      console.error('[SongSync] Setlists Phase 1 fetch error', p1.error);
+      throw p1.error;
     } else {
-      const errCode = result.error.code;
-      const errMsg = (result.error.message || '').toLowerCase();
-      const isColumnMissing = errCode === '42703' || errMsg.includes('column') || errMsg.includes('song_ids');
-
-      if (!isColumnMissing) {
-        console.error('[SongSync] Setlists fetch error', result.error);
-        throw result.error;
+      const legacy = await fetchAllSetlistPages('id,user_id,name,created_at,updated_at,legacy_id');
+      if (legacy.error) {
+        console.error('[SongSync] Setlists fallback fetch error', legacy.error);
+        throw legacy.error;
       }
+      setlistsData = legacy.data || [];
     }
-  } catch {
-    // Column missing; fall through to basic select
   }
 
   if (!setlistsData.length) {
-    const fallbackResult = await supabaseClient
-      .from('setlists')
-      .select('id,user_id,name,created_at,updated_at,legacy_id')
-      .eq('user_id', userId);
-
-    if (fallbackResult.error) {
-      console.error('[SongSync] Setlists fallback fetch error', fallbackResult.error);
-      throw fallbackResult.error;
-    }
-    setlistsData = fallbackResult.data || [];
+    return {
+      rows: [],
+      hasExtendedColumns,
+      hasServerVersion,
+      isIncremental: false,
+      isComplete: true,
+      relationshipsComplete: true,
+    };
   }
 
-  // Fetch relational links from setlist_songs
-  let linkRows: any[] = [];
-  const remoteSetlistIds = setlistsData
-    .map((setlist: any) => String(setlist?.id || '').trim())
-    .filter(Boolean);
-
-  try {
-    let linkResult = await supabaseClient
-      .from('setlist_songs')
-      .select('setlist_id,song_id,position')
-      .eq('user_id', userId);
-
-    if (!linkResult.error && (!linkResult.data || !linkResult.data.length) && remoteSetlistIds.length) {
-      linkResult = await supabaseClient
-        .from('setlist_songs')
-        .select('setlist_id,song_id,position')
-        .in('setlist_id', remoteSetlistIds);
-    }
-
-    if (!linkResult.error) {
-      linkRows = (linkResult.data || []).slice().sort((a: any, b: any) => {
-        const left = Number.isFinite(Number(a?.position)) ? Number(a.position) : 0;
-        const right = Number.isFinite(Number(b?.position)) ? Number(b.position) : 0;
-        return left - right;
-      });
-    }
-  } catch (error) {
-    console.warn('[SongSync] setlist_songs fetch failed, continuing with direct setlist song_ids', error);
-  }
-
+  // Track every active setlist whose relationships were explicitly queried
   const songIdsBySetlist = new Map<string, string[]>();
-  for (const row of linkRows) {
-    const setlistId = String(row?.setlist_id || '').trim();
-    const songId = String(row?.song_id || '').trim();
-    if (!setlistId || !songId) continue;
-    if (!songIdsBySetlist.has(setlistId)) songIdsBySetlist.set(setlistId, []);
-    songIdsBySetlist.get(setlistId)!.push(songId);
+  const fetchedSetlistIds = new Set<string>();
+  for (const s of setlistsData) {
+    if (s.deleted_at) continue;
+    const sid = String(s?.id || '').trim();
+    if (sid) {
+      songIdsBySetlist.set(sid, []);
+      fetchedSetlistIds.add(sid);
+    }
   }
 
-  return setlistsData.map((setlist: any) => {
+  if (fetchedSetlistIds.size > 0) {
+    // Retrieve ALL setlist_songs rows for the authenticated user across all pages
+    // using deterministic ordering: setlist_id -> position -> song_id -> id.
+    const fetchAllRelationshipPages = async (includeSurrogateId: boolean) => {
+      const rows: any[] = [];
+      const seenLinkIds = new Set<string>();
+      let offset = 0;
+
+      while (true) {
+        let query = (supabaseClient as any)
+          .from('setlist_songs')
+          .select(includeSurrogateId ? 'id,setlist_id,song_id,position' : 'setlist_id,song_id,position')
+          .eq('user_id', userId)
+          .order('setlist_id', { ascending: true })
+          .order('position', { ascending: true })
+          .order('song_id', { ascending: true });
+
+        if (includeSurrogateId) {
+          query = query.order('id', { ascending: true });
+        }
+
+        const { data, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+        if (error) return { data: null, error };
+
+        const page = data || [];
+        for (const row of page) {
+          if (includeSurrogateId && row?.id !== undefined && row?.id !== null) {
+            const linkId = String(row.id);
+            if (seenLinkIds.has(linkId)) continue;
+            seenLinkIds.add(linkId);
+          }
+          rows.push(row);
+        }
+
+        if (page.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
+      }
+
+      return { data: rows, error: null };
+    };
+
+    let relResult = await fetchAllRelationshipPages(true);
+    if (relResult.error && isMissingColumnError(relResult.error, ['id'])) {
+      relResult = await fetchAllRelationshipPages(false);
+    }
+
+    if (relResult.error) {
+      console.error('[SongSync] Failed fetching setlist_songs links:', relResult.error);
+      throw relResult.error;
+    }
+
+    const linkRows = [...(relResult.data || [])];
+    linkRows.sort((a: any, b: any) => {
+      const setlistCmp = String(a?.setlist_id || '').localeCompare(String(b?.setlist_id || ''));
+      if (setlistCmp !== 0) return setlistCmp;
+
+      const posLeft = Number.isFinite(Number(a?.position)) ? Number(a.position) : 0;
+      const posRight = Number.isFinite(Number(b?.position)) ? Number(b.position) : 0;
+      if (posLeft !== posRight) return posLeft - posRight;
+
+      const songCmp = String(a?.song_id || '').localeCompare(String(b?.song_id || ''));
+      if (songCmp !== 0) return songCmp;
+
+      return String(a?.id ?? '').localeCompare(String(b?.id ?? ''));
+    });
+
+    for (const row of linkRows) {
+      const setlistId = String(row?.setlist_id || '').trim();
+      const songId = String(row?.song_id || '').trim();
+      if (!setlistId || !songId || !fetchedSetlistIds.has(setlistId)) continue;
+      songIdsBySetlist.get(setlistId)!.push(songId);
+    }
+  }
+
+  // Because setlist_songs completed for all active setlists, empty arrays represent
+  // genuinely empty setlists and must NEVER fall back to stale setlists.song_ids.
+  const mergedRows = setlistsData.map((setlist: any) => {
     const setlistId = String(setlist?.id || '').trim();
-    const relationalSongs = songIdsBySetlist.get(setlistId);
-    
-    // Prefer relational linkRows if available, otherwise fall back to direct song_ids column
-    const songs = (relationalSongs && relationalSongs.length > 0)
-      ? relationalSongs
-      : (Array.isArray(setlist?.song_ids) ? setlist.song_ids : []);
+    const relationshipsLoaded = !setlist?.deleted_at && fetchedSetlistIds.has(setlistId);
+    const songs = relationshipsLoaded ? songIdsBySetlist.get(setlistId) ?? [] : [];
 
     return {
       ...setlist,
       songs,
+      relationshipsLoaded,
     };
   });
+
+  return {
+    rows: mergedRows,
+    hasExtendedColumns,
+    hasServerVersion,
+    isIncremental: false,
+    isComplete: true,
+    relationshipsComplete: true,
+  };
 }
 
 /**
@@ -396,25 +1162,16 @@ function isRpcUnavailableError(err: any): boolean {
   const code = String(err.code || '').trim().toUpperCase();
   const message = String(err.message || '').toLowerCase();
 
-  // 1. PostgREST error code: Function not found in schema cache
-  if (code === 'PGRST202') return true;
+  if (code === 'PGRST202' || code === '42883') return true;
 
-  // 2. PostgreSQL error code: undefined_function (SQLSTATE 42883)
-  if (code === '42883') return true;
-
-  // 3. HTTP 404 Not Found specifically for missing replace_setlist_songs RPC endpoint.
-  // Unrelated 404s (e.g., general route, proxy, or gateway errors) are never classified as an unavailable RPC.
   const details = String(err.details || '').toLowerCase();
   if (err.status === 404 && (message.includes('replace_setlist_songs') || details.includes('replace_setlist_songs'))) {
     return true;
   }
 
-  // 4. Exact PostgREST / Postgres missing-function message patterns only
   if (
-    message.includes('could not find the function public.replace_setlist_songs in the schema cache') ||
-    message.includes('could not find the function replace_setlist_songs in the schema cache') ||
-    message.includes('function replace_setlist_songs does not exist') ||
-    message.includes('function public.replace_setlist_songs does not exist')
+    message.includes('replace_setlist_songs') &&
+    (message.includes('schema cache') || message.includes('does not exist'))
   ) {
     return true;
   }
@@ -422,277 +1179,237 @@ function isRpcUnavailableError(err: any): boolean {
   return false;
 }
 
+function isRpcVersionConflictError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '').trim().toUpperCase();
+  const message = String(err.message || '').toLowerCase();
+  return code === 'P0409' || message.includes('setlist server_version mismatch');
+}
+
+function isRpcMissingVersionError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '').trim().toUpperCase();
+  const message = String(err.message || '').toLowerCase();
+  return (
+    code === 'P0002' ||
+    message.includes('missing version:') ||
+    isMissingColumnError(err, ['server_version', 'song_ids', 'deleted_at'])
+  );
+}
+
+export type ReplaceSetlistSongsResult =
+  | { status: 'ok'; count: number; method: 'rpc'; serverVersion: number }
+  | { status: 'conflict'; remoteRow: any }
+  | { status: 'conflict_fetch_failed'; error: string }
+  | { status: 'missing_version_mechanism'; error: string };
+
 /**
- * Replaces songs in setlist_songs in Supabase with transaction safety.
- * - Primary Path: Atomic Postgres RPC (replace_setlist_songs) providing true ACID atomicity.
- * - Secondary Fallback: Client-side sequential compensation ONLY when the RPC is confirmed missing.
+ * Replaces songs in setlist_songs in Supabase using the version-guarded atomic Postgres RPC
+ * (replace_setlist_songs(text, text[], bigint)). Never falls back to unguarded direct updates.
  */
-export async function replaceSetlistSongsInSupabase(setlistId: string, remoteSongIds: string[], userId: string) {
+export async function replaceSetlistSongsInSupabase(
+  setlistId: string,
+  remoteSongIds: string[],
+  userId: string,
+  expectedServerVersion: number
+): Promise<ReplaceSetlistSongsResult> {
   const supabaseClient = getClient();
   if (!supabaseClient) throw new Error('Supabase client is not configured.');
-  if (!setlistId) throw new Error('Setlist id is missing.');
-  if (!userId) throw new Error('User id is required for setlist song sync.');
+  const cleanSetlistId = String(setlistId || '').trim();
+  const cleanUserId = String(userId || '').trim();
+  if (!cleanSetlistId) throw new Error('Setlist id is missing.');
+  if (!cleanUserId) throw new Error('User id is required for setlist song sync.');
 
   const orderedSongIds = Array.isArray(remoteSongIds) ? remoteSongIds.filter(Boolean) : [];
+  const expectedVer = Number(expectedServerVersion);
 
-  // Attempt atomic server transaction via RPC if migration script was executed
-  try {
-    const { error: rpcError } = await (supabaseClient as any)
-      .rpc('replace_setlist_songs', {
-        p_setlist_id: String(setlistId),
-        p_song_ids: orderedSongIds.map(String),
-      });
-
-    if (!rpcError) {
-      return { skipped: false, count: orderedSongIds.length, method: 'rpc' };
+  const handleConflictFetch = async (notFoundMessage: string): Promise<ReplaceSetlistSongsResult> => {
+    const fetched = await fetchSetlistWithLinksById(cleanUserId, cleanSetlistId);
+    if (fetched.status === 'ok') {
+      return { status: 'conflict', remoteRow: fetched.row };
     }
-
-    // Strict Error Classification:
-    // Only fall back to client-side sequential update if the RPC is demonstrably missing/unavailable.
-    // Never fall back on authentication, authorization, ownership, or validation failures.
-    if (isRpcUnavailableError(rpcError)) {
-      console.warn('[SongSync] replace_setlist_songs RPC is not installed on Supabase. Falling back to client-side sequential update.', rpcError);
-    } else {
-      console.error('[SongSync] replace_setlist_songs RPC rejected with validation or database error:', rpcError);
-      throw rpcError;
+    if (fetched.status === 'missing_version_mechanism') {
+      return { status: 'missing_version_mechanism', error: fetched.error };
     }
-  } catch (rpcCallErr: any) {
-    if (isRpcUnavailableError(rpcCallErr)) {
-      console.warn('[SongSync] replace_setlist_songs RPC is not available. Falling back to client-side sequential update.', rpcCallErr);
-    } else {
-      throw rpcCallErr;
+    if (fetched.status === 'not_found') {
+      return { status: 'conflict_fetch_failed', error: notFoundMessage };
     }
-  }
+    return { status: 'conflict_fetch_failed', error: fetched.error };
+  };
 
-  // Fallback Preflight Security Validation:
-  // Avoid relying solely on caller-supplied userId: Verify active authenticated Supabase session
-  const currentUser = await getCurrentUser();
-  if (!currentUser || !currentUser.id) {
-    throw new Error('Unauthorized: No active authenticated Supabase session.');
-  }
-  if (currentUser.id !== userId) {
-    throw new Error('Forbidden: Caller userId does not match authenticated user session.');
-  }
-  const effectiveUserId = currentUser.id;
-
-  // 1. Verify target setlist exists, belongs to authenticated user, and is active (deleted_at IS NULL)
-  const { data: setlistRow, error: setlistFetchErr } = await (supabaseClient as any)
-    .from('setlists')
-    .select('id, user_id, deleted_at')
-    .eq('id', String(setlistId))
-    .single();
-
-  if (setlistFetchErr || !setlistRow) {
-    console.error('[SongSync] Preflight failed: Target setlist not found or unauthorized', setlistFetchErr);
-    throw new Error(`Validation failed: Target setlist not found or unauthorized (${setlistFetchErr?.message || 'not found'}).`);
-  }
-
-  if (setlistRow.user_id !== effectiveUserId) {
-    throw new Error('Forbidden: Target setlist does not belong to the authenticated user.');
-  }
-
-  if (setlistRow.deleted_at) {
-    throw new Error('Validation failed: Target setlist has been deleted.');
-  }
-
-  // 2. If songs are requested, verify EVERY requested song exists, belongs to authenticated user,
-  // and has deleted_at IS NULL BEFORE modifying any existing links.
-  if (orderedSongIds.length > 0) {
-    const { data: songsData, error: songsFetchErr } = await (supabaseClient as any)
-      .from('songs')
-      .select('id, user_id, deleted_at')
-      .in('id', orderedSongIds);
-
-    if (songsFetchErr) {
-      console.error('[SongSync] Preflight failed: Could not query songs for validation', songsFetchErr);
-      throw new Error(`Validation failed: Error querying songs for validation (${songsFetchErr.message || songsFetchErr}).`);
-    }
-
-    const activeUserSongs = new Set(
-      (songsData || [])
-        .filter((s: any) => s.user_id === effectiveUserId && !s.deleted_at)
-        .map((s: any) => String(s.id))
+  if (!Number.isFinite(expectedVer) || expectedVer <= 0) {
+    return handleConflictFetch(
+      `Setlist "${cleanSetlistId}" is missing a valid positive expected server_version and its remote record could not be retrieved.`
     );
-
-    for (const songId of orderedSongIds) {
-      if (!activeUserSongs.has(String(songId))) {
-        throw new Error(`Validation failed: Song "${songId}" is invalid, deleted, or unauthorized.`);
-      }
-    }
   }
 
-  // Safe client-side replacement:
-  // 1. Snapshot existing links before making changes
-  const { data: snapshotData, error: snapshotError } = await (supabaseClient as any)
-    .from('setlist_songs')
-    .select('setlist_id,song_id,position,user_id')
-    .eq('user_id', effectiveUserId)
-    .eq('setlist_id', String(setlistId));
-
-  if (snapshotError) {
-    console.error('[SongSync] Aborting setlist update: Failed to query existing setlist_songs snapshot.', snapshotError);
-    throw new Error(`Failed to snapshot existing setlist links before update: ${snapshotError.message || snapshotError}`);
-  }
-
-  const existingLinks: any[] = snapshotData || [];
-
+  let rpcData: any = null;
+  let rpcError: any = null;
   try {
-    // 2. Delete existing links
-    const { error: deleteError } = await (supabaseClient as any)
-      .from('setlist_songs')
-      .delete()
-      .eq('user_id', userId)
-      .eq('setlist_id', String(setlistId));
+    const res = await (supabaseClient as any).rpc('replace_setlist_songs', {
+      p_setlist_id: cleanSetlistId,
+      p_song_ids: orderedSongIds.map(String),
+      p_expected_server_version: expectedVer,
+    });
+    rpcData = res?.data;
+    rpcError = res?.error;
+  } catch (rpcCallErr: any) {
+    rpcError = rpcCallErr;
+  }
 
-    if (deleteError) {
-      console.error('[SongSync] Failed to clear existing setlist_songs links:', deleteError);
-      throw deleteError;
+  if (rpcError) {
+    if (isRpcVersionConflictError(rpcError)) {
+      return handleConflictFetch(
+        `Setlist "${cleanSetlistId}" relationship update conflicted at version ${expectedVer}, and the current remote setlist could not be retrieved.`
+      );
     }
 
-    // 3. Handle intentionally emptied setlist:
-    // Must update public.setlists.song_ids to [] so both representations agree
-    if (!orderedSongIds.length) {
-      let emptyUpdateError: any = null;
-      try {
-        const { error: updateError } = await (supabaseClient as any)
-          .from('setlists')
-          .update({
-            song_ids: [],
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', String(setlistId))
-          .eq('user_id', String(userId));
-        
-        if (updateError) {
-          emptyUpdateError = updateError;
-        }
-      } catch (err) {
-        emptyUpdateError = err;
-      }
-
-      if (emptyUpdateError) {
-        console.warn('[SongSync] Partial success: setlist_songs cleared, but setlists.song_ids update to [] failed. Next sync will self-heal.', emptyUpdateError);
-        return {
-          skipped: false,
-          count: 0,
-          method: 'direct_partial',
-          warning: 'Relational links cleared, but song_ids update to [] failed. Next sync will self-heal.'
-        };
-      }
-
-      return { skipped: false, count: 0, method: 'direct' };
-    }
-
-    // 4. Insert new ordered rows for non-empty setlist
-    const rows = orderedSongIds.map((songId, index) => ({
-      user_id: String(userId),
-      setlist_id: String(setlistId),
-      song_id: String(songId),
-      position: index + 1,
-    }));
-
-    const { error: insertError } = await (supabaseClient as any)
-      .from('setlist_songs')
-      .insert(rows);
-
-    if (insertError) {
-      console.error('[SongSync] setlist_songs insert error, attempting client-side compensating restoration', insertError);
-      
-      // Best-effort compensating restoration using saved snapshot
-      let restorationFailed = false;
-      let restorationError: any = null;
-      if (existingLinks.length > 0) {
-        try {
-          const { error: restoreErr } = await (supabaseClient as any)
-            .from('setlist_songs')
-            .insert(existingLinks);
-          if (restoreErr) {
-            restorationFailed = true;
-            restorationError = restoreErr;
-          }
-        } catch (rErr) {
-          restorationFailed = true;
-          restorationError = rErr;
-        }
-      }
-
-      if (restorationFailed) {
-        console.error('[SongSync] CRITICAL: Compensating restoration failed. Setlist songs on cloud may be empty until next sync.', restorationError);
-        throw new Error(`Replacement failed (${insertError.message || insertError}) and compensating restoration failed (${restorationError?.message || restorationError}). Local Dexie data remains intact.`);
-      }
-
-      throw insertError;
-    }
-
-    // 5. Client-side sequential fallback for setlists.song_ids:
-    // IMPORTANT ARCHITECTURAL NOTE:
-    // This fallback is NOT ACID-atomic. It executes as a separate, sequential HTTP request after
-    // relational setlist_songs rows are successfully inserted. If an interruption occurs here,
-    // relational links are already safe in Supabase, and the next sync cycle will heal the song_ids column.
-    let songIdsUpdateError: any = null;
-    try {
-      const { error: updateError } = await (supabaseClient as any)
-        .from('setlists')
-        .update({
-          song_ids: orderedSongIds,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', String(setlistId))
-        .eq('user_id', String(userId));
-      
-      if (updateError) {
-        songIdsUpdateError = updateError;
-      }
-    } catch (fallbackUpdateErr) {
-      songIdsUpdateError = fallbackUpdateErr;
-    }
-
-    if (songIdsUpdateError) {
-      console.warn('[SongSync] Partial success: setlist_songs rows updated, but setlists.song_ids JSONB update failed. Relational links are intact; next sync will repair the JSONB column.', songIdsUpdateError);
+    if (isRpcUnavailableError(rpcError) || isRpcMissingVersionError(rpcError)) {
       return {
-        skipped: false,
-        count: rows.length,
-        method: 'direct_partial',
-        warning: 'Relational links replaced, but song_ids column update failed. Next sync will self-heal.'
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase is missing the version-guarded replace_setlist_songs RPC or server_version mechanism. Run supabase_phase2_migration.sql before syncing setlist relationships.',
       };
     }
 
-    return { skipped: false, count: rows.length, method: 'direct' };
-  } catch (error) {
-    console.error('[SongSync] replaceSetlistSongsInSupabase direct fallback failed:', error);
-    throw error;
+    console.error('[SongSync] replace_setlist_songs RPC rejected:', rpcError);
+    throw rpcError;
   }
+
+  const parsedVersion = typeof rpcData === 'number' ? rpcData : Number(rpcData);
+  if (!Number.isFinite(parsedVersion) || parsedVersion <= 0 || parsedVersion === expectedVer) {
+    return {
+      status: 'missing_version_mechanism',
+      error:
+        'Supabase replace_setlist_songs RPC did not return an advanced positive server_version. Ensure supabase_phase2_migration.sql is applied.',
+    };
+  }
+
+  return {
+    status: 'ok',
+    count: orderedSongIds.length,
+    method: 'rpc',
+    serverVersion: parsedVersion,
+  };
 }
 
-/**
- * Propagates a setlist deletion tombstone to Supabase so other devices know it was deleted.
- */
-export async function markSetlistDeletedInSupabase(legacyId: string, deletedAt: number, userId: string) {
-  const supabaseClient = getClient();
-  if (!supabaseClient || !legacyId || !userId) return;
+export async function inspectSetlistDeletionCandidateInSupabase(
+  params: { legacyId: string; remoteId?: string },
+  userId: string
+): Promise<DeletionInspectResult<any>> {
+  const cleanUserId = String(userId || '').trim();
+  const cleanRemoteId = params.remoteId ? String(params.remoteId).trim() : '';
+  const cleanLegacyId = params.legacyId ? String(params.legacyId).trim() : '';
 
-  const deletedIso = new Date(deletedAt).toISOString();
-
-  try {
-    const { error } = await (supabaseClient as any)
-      .from('setlists')
-      .update({ deleted_at: deletedIso })
-      .eq('user_id', userId)
-      .eq('legacy_id', legacyId);
-
-    if (!error) return;
-
-    const errMsg = (error.message || '').toLowerCase();
-    if (error.code === '42703' || errMsg.includes('column') || errMsg.includes('deleted_at')) {
-      await (supabaseClient as any)
-        .from('setlists')
-        .delete()
-        .eq('user_id', userId)
-        .eq('legacy_id', legacyId);
-    }
-  } catch (err) {
-    console.warn('[SongSync] Error marking setlist deleted in Supabase:', err);
+  if (!cleanUserId || (!cleanRemoteId && !cleanLegacyId)) {
+    return { status: 'fetch_failed', error: 'User id and setlist identifier are required.' };
   }
+
+  let fetched = cleanRemoteId
+    ? await fetchSetlistWithLinksById(cleanUserId, cleanRemoteId)
+    : await fetchSetlistWithLinksByLegacyId(cleanUserId, cleanLegacyId);
+
+  if (fetched.status === 'not_found' && cleanRemoteId && cleanLegacyId) {
+    fetched = await fetchSetlistWithLinksByLegacyId(cleanUserId, cleanLegacyId);
+  }
+
+  if (fetched.status === 'missing_version_mechanism') {
+    return { status: 'missing_version_mechanism', error: fetched.error };
+  }
+  if (fetched.status === 'error') {
+    return { status: 'fetch_failed', error: fetched.error };
+  }
+  if (fetched.status === 'not_found') {
+    return { status: 'not_found' };
+  }
+
+  if (fetched.row?.deleted_at) {
+    return { status: 'already_deleted', row: fetched.row };
+  }
+  return { status: 'active_found', remoteRow: fetched.row };
+}
+
+export async function softDeleteSetlistConditionalInSupabase(
+  params: { legacyId: string; remoteId?: string; baseVersion?: number; deletedAt?: number },
+  userId: string
+): Promise<ConditionalDeleteResult<any>> {
+  const supabaseClient = getClient();
+  if (!supabaseClient) {
+    return { status: 'fetch_failed', error: 'Supabase client is not configured.' };
+  }
+  const cleanUserId = String(userId || '').trim();
+  const cleanLegacyId = String(params.legacyId || '').trim();
+  const cleanRemoteId = params.remoteId ? String(params.remoteId).trim() : '';
+  const baseVersion = Number(params.baseVersion);
+
+  if (!cleanUserId || !cleanLegacyId) {
+    return { status: 'fetch_failed', error: 'User id and setlist id are required for deletion.' };
+  }
+
+  if (!cleanRemoteId || !Number.isFinite(baseVersion) || baseVersion <= 0) {
+    const inspected = await inspectSetlistDeletionCandidateInSupabase(
+      { legacyId: cleanLegacyId, remoteId: cleanRemoteId },
+      cleanUserId
+    );
+    if (inspected.status === 'not_found') return { status: 'already_deleted' };
+    if (inspected.status === 'already_deleted') {
+      return { status: 'already_deleted', row: inspected.row };
+    }
+    if (inspected.status === 'active_found') {
+      return { status: 'conflict', remoteRow: inspected.remoteRow };
+    }
+    return inspected;
+  }
+
+  // Soft-delete setlist row only; preserve setlist_songs rows so restore never loses membership.
+  const deletedIso = new Date(params.deletedAt || Date.now()).toISOString();
+  const { data, error } = await (supabaseClient as any)
+    .from('setlists')
+    .update({ deleted_at: deletedIso })
+    .eq('user_id', cleanUserId)
+    .eq('id', cleanRemoteId)
+    .eq('server_version', baseVersion)
+    .is('deleted_at', null)
+    .select(SETLIST_PHASE2_COLUMNS);
+
+  if (error) {
+    if (isMissingColumnError(error, ['server_version', 'song_ids', 'deleted_at'])) {
+      return {
+        status: 'missing_version_mechanism',
+        error:
+          'Supabase setlists table is missing Phase 2 deleted_at/server_version columns. Run supabase_phase2_migration.sql before syncing deletions.',
+      };
+    }
+    console.error('[SongSync] Setlist conditional soft-delete error', error);
+    return { status: 'fetch_failed', error: error.message || String(error) };
+  }
+
+  if (!data || data.length === 0) {
+    const inspected = await inspectSetlistDeletionCandidateInSupabase(
+      { legacyId: cleanLegacyId, remoteId: cleanRemoteId },
+      cleanUserId
+    );
+    if (inspected.status === 'not_found') return { status: 'already_deleted' };
+    if (inspected.status === 'already_deleted') {
+      return { status: 'already_deleted', row: inspected.row };
+    }
+    if (inspected.status === 'active_found') {
+      return { status: 'conflict', remoteRow: inspected.remoteRow };
+    }
+    return inspected;
+  }
+
+  const deletedRow = data[0];
+  const newVersion = Number(deletedRow?.server_version);
+  if (!deletedRow?.deleted_at || !Number.isFinite(newVersion) || newVersion <= 0 || newVersion === baseVersion) {
+    return {
+      status: 'missing_version_mechanism',
+      error:
+        'Supabase setlists soft-delete did not advance server_version or record deleted_at. Ensure the Phase 2 server_version trigger is active.',
+    };
+  }
+
+  return { status: 'deleted', row: deletedRow };
 }
 
 export async function upsertProfile(user: any) {
@@ -703,13 +1420,49 @@ export async function upsertProfile(user: any) {
     id: String(user.id).trim(),
   };
 
-  const { error } = await (supabaseClient as any)
-    .from('profiles')
-    .upsert(payload, { onConflict: 'id' });
+  const { error } = await (supabaseClient as any).from('profiles').upsert(payload, { onConflict: 'id' });
 
   if (error) {
     console.error('[SongSync] Profile upsert error', error);
     throw error;
   }
   return { skipped: false };
+}
+
+/**
+ * Lightweight Realtime nudge subscription: notifies the client to run a delta sync
+ * when another device updates songs or setlists. Never applies raw WS payloads directly.
+ */
+export function subscribeToUserSyncChanges(userId: string, onRemoteChange: () => void): () => void {
+  const supabaseClient = getClient();
+  if (!supabaseClient || !userId) return () => {};
+
+  const cleanUserId = String(userId).trim();
+  const channel = supabaseClient
+    .channel(`songbinder-sync-${cleanUserId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'songs',
+        filter: `user_id=eq.${cleanUserId}`,
+      },
+      () => onRemoteChange()
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'setlists',
+        filter: `user_id=eq.${cleanUserId}`,
+      },
+      () => onRemoteChange()
+    )
+    .subscribe();
+
+  return () => {
+    supabaseClient.removeChannel(channel).catch(() => {});
+  };
 }

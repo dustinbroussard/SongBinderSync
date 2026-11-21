@@ -1,8 +1,7 @@
 import { useMemo, useCallback } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db, recordTombstone, clearTombstone } from "../lib/db";
+import { db, createSongLocal, deleteSongLocal } from "../lib/db";
 import type { Song } from "../types";
-import { v4 as uuidv4 } from "uuid";
 import Fuse from "fuse.js";
 
 type SortBy = 'title' | 'updatedAt';
@@ -88,32 +87,11 @@ export function useSongs(
   }, [allSongs, fuse, searchQuery, sortBy, sortOrder]);
 
   const addSong = useCallback(async (title: string, lyrics: string = "") => {
-    const newSong: Song = {
-      id: uuidv4(),
-      title,
-      lyrics,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      metadata: {}
-    };
-    await db.songs.add(newSong);
-    await clearTombstone(newSong.id);
-    return newSong;
+    return createSongLocal(title, lyrics);
   }, []);
 
   const deleteSong = useCallback(async (id: string) => {
-    await db.songs.delete(id);
-    await recordTombstone(id, 'song');
-    // Also remove from all setlists
-    const setlists = await db.setlists.toArray();
-    for (const setlist of setlists) {
-      if (setlist.songIds.includes(id)) {
-        await db.setlists.update(setlist.id, {
-          songIds: setlist.songIds.filter(sId => sId !== id),
-          updatedAt: Date.now()
-        });
-      }
-    }
+    await deleteSongLocal(id);
   }, []);
 
   return { songs, addSong, deleteSong };

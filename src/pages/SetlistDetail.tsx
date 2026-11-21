@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, type Key } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Play, Plus, Trash2, Search, Download, Type, FileJson, FileType, Music, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db, recordTombstone } from "../lib/db";
+import { db, updateSetlistLocal, deleteSetlistLocal } from "../lib/db";
 import type { Song } from "../types";
 import { cn } from "../lib/utils";
 import jsPDF from "jspdf";
@@ -143,14 +143,11 @@ export default function SetlistDetail() {
     const { active, over } = event;
     if (!setlist || !over || active.id === over.id) return;
 
-    const oldIndex = setlist.songIds.indexOf(active.id as string);
-    const newIndex = setlist.songIds.indexOf(over.id as string);
-
-    const newSongIds = arrayMove(setlist.songIds, oldIndex, newIndex);
-    
-    await db.setlists.update(setlist.id, {
-      songIds: newSongIds,
-      updatedAt: Date.now()
+    await updateSetlistLocal(setlist.id, (current) => {
+      const fromIdx = current.songIds.indexOf(active.id as string);
+      const toIdx = current.songIds.indexOf(over.id as string);
+      if (fromIdx === -1 || toIdx === -1) return {};
+      return { songIds: arrayMove(current.songIds, fromIdx, toIdx) };
     });
   };
 
@@ -193,10 +190,9 @@ export default function SetlistDetail() {
       success("Setlist sorted by key");
     }
 
-    await db.setlists.update(setlist.id, {
-      songIds: sorted.map(s => s.id),
-      updatedAt: Date.now()
-    });
+    await updateSetlistLocal(setlist.id, () => ({
+      songIds: sorted.map(s => s.id)
+    }));
   };
 
   const exportTXT = () => {
@@ -331,51 +327,45 @@ export default function SetlistDetail() {
     .sort((a, b) => a.title.localeCompare(b.title));
 
   const addSongToSetlist = async (songId: string) => {
-    await db.setlists.update(setlist.id, {
-      songIds: [...setlist.songIds, songId],
-      updatedAt: Date.now()
-    });
+    await updateSetlistLocal(setlist.id, (current) => ({
+      songIds: [...current.songIds, songId]
+    }));
   };
 
   const removeSongFromSetlist = async (songId: string) => {
-    await db.setlists.update(setlist.id, {
-      songIds: setlist.songIds.filter(id => id !== songId),
-      updatedAt: Date.now()
-    });
+    await updateSetlistLocal(setlist.id, (current) => ({
+      songIds: current.songIds.filter(id => id !== songId)
+    }));
   };
 
   const moveSong = async (index: number, direction: 'up' | 'down') => {
-    const newSongIds = [...setlist.songIds];
-    if (direction === 'up' && index > 0) {
-      const temp = newSongIds[index - 1];
-      newSongIds[index - 1] = newSongIds[index];
-      newSongIds[index] = temp;
-    } else if (direction === 'down' && index < newSongIds.length - 1) {
-      const temp = newSongIds[index + 1];
-      newSongIds[index + 1] = newSongIds[index];
-      newSongIds[index] = temp;
-    } else {
-      return;
-    }
-
-    await db.setlists.update(setlist.id, {
-      songIds: newSongIds,
-      updatedAt: Date.now()
+    await updateSetlistLocal(setlist.id, (current) => {
+      const newSongIds = [...current.songIds];
+      if (direction === 'up' && index > 0) {
+        const temp = newSongIds[index - 1];
+        newSongIds[index - 1] = newSongIds[index];
+        newSongIds[index] = temp;
+      } else if (direction === 'down' && index < newSongIds.length - 1) {
+        const temp = newSongIds[index + 1];
+        newSongIds[index + 1] = newSongIds[index];
+        newSongIds[index] = temp;
+      } else {
+        return {};
+      }
+      return { songIds: newSongIds };
     });
   };
 
   const handleTitleChange = async (newName: string) => {
     if (newName.trim() && newName !== setlist.name) {
-      await db.setlists.update(setlist.id, {
-        name: newName.trim(),
-        updatedAt: Date.now()
-      });
+      await updateSetlistLocal(setlist.id, () => ({
+        name: newName.trim()
+      }));
     }
   };
 
   const deleteSetlist = async () => {
-    await db.setlists.delete(setlist.id);
-    await recordTombstone(setlist.id, 'setlist');
+    await deleteSetlistLocal(setlist.id);
     navigate('/setlists');
   };
 

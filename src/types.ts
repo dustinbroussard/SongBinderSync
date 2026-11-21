@@ -1,3 +1,20 @@
+export type SongMetadata = {
+  key?: string;
+  tempo?: number;
+  timeSignature?: string;
+  notes?: string;
+  tags?: string[];
+  fontSize?: number;
+  scrollSpeed?: number;
+  autoScroll?: boolean;
+  autoScrollDelay?: number;
+  textAlign?: 'left' | 'center';
+  performanceNotes?: string;
+  productionNotes?: string; // Kept for backwards compatibility
+  layoutMode?: 'standard' | 'split';
+  fontFamily?: 'sans' | 'serif' | 'mono';
+};
+
 export type Song = {
   id: string;
   title: string;
@@ -5,22 +22,12 @@ export type Song = {
   createdAt: number;
   updatedAt: number;
   bpm?: number;
-  metadata: {
-    key?: string;
-    tempo?: number;
-    timeSignature?: string;
-    notes?: string;
-    tags?: string[];
-    fontSize?: number;
-    scrollSpeed?: number;
-    autoScroll?: boolean;
-    autoScrollDelay?: number;
-    textAlign?: 'left' | 'center';
-    performanceNotes?: string;
-    productionNotes?: string; // Kept for backwards compatibility
-    layoutMode?: 'standard' | 'split';
-    fontFamily?: 'sans' | 'serif' | 'mono';
-  };
+  metadata: SongMetadata;
+  // Phase 2 sync tracking fields (optional for backwards compatibility with imports/exports)
+  remoteId?: string;
+  baseVersion?: number;
+  serverUpdatedAt?: string;
+  dirty?: 0 | 1;
 };
 
 export type Setlist = {
@@ -29,4 +36,39 @@ export type Setlist = {
   songIds: string[];
   createdAt: number;
   updatedAt: number;
+  // Phase 2 sync tracking fields
+  remoteId?: string;
+  baseVersion?: number;
+  serverUpdatedAt?: string;
+  dirty?: 0 | 1;
+};
+
+export type SyncStatus =
+  | 'idle'
+  | 'syncing'
+  | 'synced'
+  | 'offline'
+  | 'error'
+  | 'auth_required'
+  | 'account_mismatch'
+  | 'conflict';
+
+export type AccountMismatchInfo = {
+  previousUserId: string;
+  newUserId: string;
+  localSongCount: number;
+  localSetlistCount: number;
+  pendingCount: number;
+};
+
+export type SyncStateSnapshot = {
+  status: SyncStatus;
+  isSyncing: boolean;
+  pendingCount: number;
+  lastSyncedAt: number | null;
+  lastSyncVersion: number;
+  lastError: string | null;
+  lastConflictCount: number;
+  schemaWarning: string | null;
+  accountMismatch: AccountMismatchInfo | null;
 };

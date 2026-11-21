@@ -1,5 +1,14 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { getCurrentUser, signOut } from "../lib/supabase";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { getSession, signOut, subscribeToAuthChanges } from "../lib/supabase";
+import { syncEngine } from "../lib/syncEngine";
+import type { SyncStateSnapshot } from "../types";
 
 type AuthContextType = {
   user: any | null;
@@ -14,26 +23,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    checkSession();
-  }, []);
+    let mounted = true;
 
-  const checkSession = async () => {
-    try {
-      const currentUser = await getCurrentUser();
-      setUser(currentUser);
-    } catch (error) {
-      console.error('Error checking session:', error);
-    } finally {
+    const initSession = async () => {
+      try {
+        const session = await getSession();
+        if (!mounted) return;
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
+        syncEngine.startLifecycle(currentUser?.id ?? null);
+      } catch (error) {
+        console.error("Error checking session:", error);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+
+    initSession();
+
+    const unsubscribe = subscribeToAuthChanges((event, session) => {
+      if (!mounted) return;
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
       setLoading(false);
-    }
-  };
+
+      if (event === "SIGNED_OUT") {
+        syncEngine.stopLifecycle();
+        syncEngine.startLifecycle(null);
+      } else if (
+        event === "SIGNED_IN" ||
+        event === "TOKEN_REFRESHED" ||
+        event === "USER_UPDATED" ||
+        event === "INITIAL_SESSION"
+      ) {
+        syncEngine.startLifecycle(nextUser?.id ?? null);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+      syncEngine.stopLifecycle();
+    };
+  }, []);
 
   const handleSignOut = async () => {
     try {
       await signOut();
       setUser(null);
+      syncEngine.stopLifecycle();
+      syncEngine.startLifecycle(null);
     } catch (error) {
-      console.error('Error signing out:', error);
+      console.error("Error signing out:", error);
     }
   };
 
@@ -51,3 +92,7 @@ export const useAuth = () => {
   }
   return context;
 };
+
+export function useSyncStatus(): SyncStateSnapshot {
+  return useSyncExternalStore(syncEngine.subscribe, syncEngine.getSnapshot);
+}

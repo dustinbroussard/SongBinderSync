@@ -5,7 +5,8 @@ import { useOcrProgress } from "../hooks/useOcrProgress";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/ToastProvider";
 import Fuse from "fuse.js";
-import { db } from "../lib/db";
+import { db, createSetlistWithNewSongsLocal } from "../lib/db";
+import type { Song } from "../types";
 import { v4 as uuidv4 } from "uuid";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
@@ -74,6 +75,8 @@ export default function SetlistsManager() {
       });
 
       const matchedSongIds: string[] = [];
+      const newSongsToCreate: Song[] = [];
+      const now = Date.now();
       for (const rawLine of lines) {
         const line = normalizeSongTitleValue(normalizeSmartQuotes(rawLine));
         if (!line) continue;
@@ -85,15 +88,15 @@ export default function SetlistsManager() {
           }
         } else {
           // Create the missing song if we don't find it
-          const newSong = {
+          const newSong: Song = {
             id: uuidv4(),
             title: line,
             lyrics: '',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
+            createdAt: now,
+            updatedAt: now,
             metadata: {}
           };
-          await db.songs.add(newSong);
+          newSongsToCreate.push(newSong);
           matchedSongIds.push(newSong.id);
         }
       }
@@ -103,10 +106,10 @@ export default function SetlistsManager() {
         id: uuidv4(),
         name: setlistName || "Untitled Setlist",
         songIds: matchedSongIds,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
+        createdAt: now,
+        updatedAt: now
       };
-      await db.setlists.add(newSetlist);
+      await createSetlistWithNewSongsLocal(newSongsToCreate, newSetlist);
       
       setIsProcessing(false);
       setShowImportModal(false);
