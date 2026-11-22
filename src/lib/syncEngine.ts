@@ -61,7 +61,7 @@ function setlistsContentEqual(a: Setlist, b: { name: string; songIds: string[] }
 function appendCopyLabel(base: string, fallback: string, _label: 'Conflict Copy' | 'Restored Copy'): string {
   // Keep recovery copies under the original human-readable title.
   // Their separate local IDs and sync records preserve the recovery behavior.
-  return (base || '').trim().replace(/\\s+\\((?:Restored Copy|Conflict Copy)\\)$/, '') || fallback;
+  return (base || '').trim().replace(/\s+\((?:Restored Copy|Conflict Copy)\)$/, '') || fallback;
 }
 
 class SyncEngine {
