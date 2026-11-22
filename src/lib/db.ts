@@ -142,12 +142,15 @@ export class SongBinderDB extends Dexie {
       .upgrade(async (tx) => {
         const now = Date.now();
         const suffix = /\\s+\\((?:Restored Copy|Conflict Copy)\\)$/;
+        const songs = await tx.table('songs').toArray();
+        const setlists = await tx.table('setlists').toArray();
 
-        await tx.table('songs').toCollection().modify(async (song: any) => {
-          if (typeof song.title !== 'string' || !suffix.test(song.title)) return;
+        for (const song of songs as any[]) {
+          if (typeof song.title !== 'string' || !suffix.test(song.title)) continue;
           song.title = song.title.replace(suffix, '').trim() || 'Untitled Song';
           song.updatedAt = now;
           song.dirty = 1;
+          await tx.table('songs').put(song);
           await tx.table('syncOutbox').put({
             key: `song:${song.id}`,
             entityType: 'song',
@@ -156,13 +159,14 @@ export class SongBinderDB extends Dexie {
             queuedAt: now,
             attempts: 0
           });
-        });
+        }
 
-        await tx.table('setlists').toCollection().modify(async (setlist: any) => {
-          if (typeof setlist.name !== 'string' || !suffix.test(setlist.name)) return;
+        for (const setlist of setlists as any[]) {
+          if (typeof setlist.name !== 'string' || !suffix.test(setlist.name)) continue;
           setlist.name = setlist.name.replace(suffix, '').trim() || 'Untitled Setlist';
           setlist.updatedAt = now;
           setlist.dirty = 1;
+          await tx.table('setlists').put(setlist);
           await tx.table('syncOutbox').put({
             key: `setlist:${setlist.id}`,
             entityType: 'setlist',
@@ -171,8 +175,8 @@ export class SongBinderDB extends Dexie {
             queuedAt: now,
             attempts: 0
           });
-        });
-      });
+        }
+      });;
   }
 }
 
