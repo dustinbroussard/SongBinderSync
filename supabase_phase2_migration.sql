@@ -546,6 +546,10 @@ REVOKE ALL ON FUNCTION public.replace_setlist_songs(text, text[], bigint) FROM P
 REVOKE ALL ON FUNCTION public.replace_setlist_songs(text, text[], bigint) FROM anon;
 GRANT EXECUTE ON FUNCTION public.replace_setlist_songs(text, text[], bigint) TO authenticated;
 
+REVOKE ALL ON FUNCTION public.songbinder_touch_sync_metadata() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.songbinder_touch_sync_metadata() FROM anon;
+GRANT EXECUTE ON FUNCTION public.songbinder_touch_sync_metadata() TO authenticated;
+
 COMMENT ON COLUMN public.songs.server_version IS 'Server-assigned sequence version bumped on every insert, update, or soft-delete as a record-level optimistic concurrency token (not a commit-ordered global cursor).';
 COMMENT ON COLUMN public.setlists.server_version IS 'Server-assigned sequence version bumped on every insert, update, or soft-delete as a record-level optimistic concurrency token (not a commit-ordered global cursor).';
 COMMENT ON FUNCTION public.replace_setlist_songs(text, text[], bigint) IS 'Atomic, authenticated, version-guarded transaction replacing ordered setlist_songs and setlists.song_ids, returning the new server_version.';
