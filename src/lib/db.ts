@@ -141,7 +141,7 @@ export class SongBinderDB extends Dexie {
       })
       .upgrade(async (tx) => {
         const now = Date.now();
-        const suffix = /\\s+\\((?:Restored Copy|Conflict Copy)\\)$/;
+        const suffix = /\s+\((?:Restored Copy|Conflict Copy)\)$/;
         const songs = await tx.table('songs').toArray();
         const setlists = await tx.table('setlists').toArray();
 
@@ -176,7 +176,7 @@ export class SongBinderDB extends Dexie {
             attempts: 0
           });
         }
-      });;
+      });
   }
 }
 
