@@ -1,4 +1,8 @@
 -- =============================================================================
+-- SUPERSEDED — DO NOT RUN THIS FILE.
+-- The application now requires the version-guarded Phase 2 RPC.
+-- Running this older Phase 1 script would replace it with an incompatible two-argument RPC.
+-- Use supabase_phase2_migration.sql / supabase/migrations instead.
 -- SongBinder Phase 1 Database Migration Script (Security Hardened)
 -- Purpose: Enable complete metadata preservation, safe deletion synchronization,
 --          and atomic setlist song ordering without breaking existing data.
