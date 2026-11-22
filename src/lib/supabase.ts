@@ -397,15 +397,15 @@ export async function fetchSongsForUser(
   const fetchAllPages = async (selectColumns: string) => {
     const allRows: any[] = [];
     const seenIds = new Set<string>();
-    let offset = 0;
+    let lastId: string | null = null;
 
     while (true) {
-      const { data, error } = await (supabaseClient as any)
+      let query = (supabaseClient as any)
         .from('songs')
         .select(selectColumns)
-        .eq('user_id', userId)
-        .order('id', { ascending: true })
-        .range(offset, offset + PAGE_SIZE - 1);
+        .eq('user_id', userId);
+      if (lastId) query = query.gt('id', lastId);
+      const { data, error } = await query.order('id', { ascending: true }).limit(PAGE_SIZE);
 
       if (error) return { data: null, error };
 
@@ -418,7 +418,8 @@ export async function fetchSongsForUser(
       }
 
       if (page.length < PAGE_SIZE) break;
-      offset += PAGE_SIZE;
+      lastId = String(page[page.length - 1]?.id || '').trim();
+      if (!lastId) return { data: null, error: new Error('Song pagination stopped because the last row had no id.') };
     }
 
     return { data: allRows, error: null };
@@ -658,22 +659,24 @@ async function fetchOrderedLinksForSingleSetlist(
   const fetchAllPages = async (includeSurrogateId: boolean) => {
     const rows: any[] = [];
     const seenLinkIds = new Set<string>();
-    let offset = 0;
+    let lastLinkId: string | null = null;
+    let lastSongId: string | null = null;
 
     while (true) {
       let query = supabaseClient
         .from('setlist_songs')
         .select(includeSurrogateId ? 'id,setlist_id,song_id,position' : 'setlist_id,song_id,position')
         .eq('user_id', userId)
-        .eq('setlist_id', setlistRemoteId)
-        .order('position', { ascending: true })
-        .order('song_id', { ascending: true });
-
+        .eq('setlist_id', setlistRemoteId);
       if (includeSurrogateId) {
+        if (lastLinkId) query = query.gt('id', lastLinkId);
         query = query.order('id', { ascending: true });
+      } else {
+        if (lastSongId) query = query.gt('song_id', lastSongId);
+        query = query.order('song_id', { ascending: true });
       }
 
-      const { data, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+      const { data, error } = await query.limit(PAGE_SIZE);
       if (error) return { data: null, error };
 
       const page = data || [];
@@ -687,7 +690,13 @@ async function fetchOrderedLinksForSingleSetlist(
       }
 
       if (page.length < PAGE_SIZE) break;
-      offset += PAGE_SIZE;
+      if (includeSurrogateId) {
+        lastLinkId = String(page[page.length - 1]?.id || '').trim();
+        if (!lastLinkId) return { data: null, error: new Error('Setlist relationship pagination stopped because the last row had no id.') };
+      } else {
+        lastSongId = String(page[page.length - 1]?.song_id || '').trim();
+        if (!lastSongId) return { data: null, error: new Error('Setlist relationship pagination stopped because the last row had no song id.') };
+      }
     }
 
     return { data: rows, error: null };
@@ -970,15 +979,15 @@ export async function fetchSetlistsForUser(
   const fetchAllSetlistPages = async (selectColumns: string) => {
     const allRows: any[] = [];
     const seenIds = new Set<string>();
-    let offset = 0;
+    let lastId: string | null = null;
 
     while (true) {
-      const { data, error } = await (supabaseClient as any)
+      let query = (supabaseClient as any)
         .from('setlists')
         .select(selectColumns)
-        .eq('user_id', userId)
-        .order('id', { ascending: true })
-        .range(offset, offset + PAGE_SIZE - 1);
+        .eq('user_id', userId);
+      if (lastId) query = query.gt('id', lastId);
+      const { data, error } = await query.order('id', { ascending: true }).limit(PAGE_SIZE);
 
       if (error) return { data: null, error };
 
@@ -991,7 +1000,8 @@ export async function fetchSetlistsForUser(
       }
 
       if (page.length < PAGE_SIZE) break;
-      offset += PAGE_SIZE;
+      lastId = String(page[page.length - 1]?.id || '').trim();
+      if (!lastId) return { data: null, error: new Error('Setlist pagination stopped because the last row had no id.') };
     }
 
     return { data: allRows, error: null };
@@ -1060,22 +1070,27 @@ export async function fetchSetlistsForUser(
     const fetchAllRelationshipPages = async (includeSurrogateId: boolean) => {
       const rows: any[] = [];
       const seenLinkIds = new Set<string>();
-      let offset = 0;
+      let lastLinkId: string | null = null;
+      let lastSetlistId: string | null = null;
+      let lastSongId: string | null = null;
 
       while (true) {
         let query = (supabaseClient as any)
           .from('setlist_songs')
           .select(includeSurrogateId ? 'id,setlist_id,song_id,position' : 'setlist_id,song_id,position')
-          .eq('user_id', userId)
-          .order('setlist_id', { ascending: true })
-          .order('position', { ascending: true })
-          .order('song_id', { ascending: true });
+          .eq('user_id', userId);
 
         if (includeSurrogateId) {
+          if (lastLinkId) query = query.gt('id', lastLinkId);
           query = query.order('id', { ascending: true });
+        } else {
+          if (lastSetlistId && lastSongId) {
+            query = query.or(`setlist_id.gt.${lastSetlistId},and(setlist_id.eq.${lastSetlistId},song_id.gt.${lastSongId})`);
+          }
+          query = query.order('setlist_id', { ascending: true }).order('song_id', { ascending: true });
         }
 
-        const { data, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+        const { data, error } = await query.limit(PAGE_SIZE);
         if (error) return { data: null, error };
 
         const page = data || [];
@@ -1089,7 +1104,14 @@ export async function fetchSetlistsForUser(
         }
 
         if (page.length < PAGE_SIZE) break;
-        offset += PAGE_SIZE;
+        if (includeSurrogateId) {
+          lastLinkId = String(page[page.length - 1]?.id || '').trim();
+          if (!lastLinkId) return { data: null, error: new Error('Relationship pagination stopped because the last row had no id.') };
+        } else {
+          lastSetlistId = String(page[page.length - 1]?.setlist_id || '').trim();
+          lastSongId = String(page[page.length - 1]?.song_id || '').trim();
+          if (!lastSetlistId || !lastSongId) return { data: null, error: new Error('Relationship pagination stopped because the last row had no stable key.') };
+        }
       }
 
       return { data: rows, error: null };
