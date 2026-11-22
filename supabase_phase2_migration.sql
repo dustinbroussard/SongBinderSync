@@ -387,7 +387,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.songbinder_touch_sync_metadata()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = ''
 AS $$
 BEGIN
@@ -423,7 +423,7 @@ CREATE FUNCTION public.replace_setlist_songs(
   p_expected_server_version bigint
 ) RETURNS bigint
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = ''
 AS $$
 DECLARE
