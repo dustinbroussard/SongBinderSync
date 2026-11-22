@@ -58,10 +58,14 @@ function setlistsContentEqual(a: Setlist, b: { name: string; songIds: string[] }
   return true;
 }
 
-function appendCopyLabel(base: string, fallback: string, _label: 'Conflict Copy' | 'Restored Copy'): string {
-  // Keep recovery copies under the original human-readable title.
-  // Their separate local IDs and sync records preserve the recovery behavior.
-  return (base || '').trim().replace(/\s+\((?:Restored Copy|Conflict Copy)\)$/, '') || fallback;
+function appendCopyLabel(base: string, fallback: string, label: 'Conflict Copy' | 'Restored Copy'): string {
+  const clean = (base || '').trim() || fallback;
+  if (label === 'Conflict Copy') {
+    const suffix = ' (Conflict Copy)';
+    return clean.endsWith(suffix) ? clean : `${clean}${suffix}`;
+  }
+  // Restored copies retain their content and separate IDs without a noisy title suffix.
+  return clean.replace(/\s+\(Restored Copy\)$/, '');
 }
 
 class SyncEngine {
