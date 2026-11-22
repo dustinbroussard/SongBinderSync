@@ -179,8 +179,9 @@ export class SongBinderDB extends Dexie {
         }
       });
 
-    // Version 5: prevent label-cleanup recovery snapshots from being uploaded
-    // as duplicate setlists when an already-synced original contains the same songs.
+    // Version 5: clear the temporary recovery marker without deleting records.
+    // Similar names and overlapping song lists are not proof that two setlists are duplicates.
+    // Preserve both records and let the user decide; migrations must never infer destructive merges.
     this.version(5)
       .stores({
         songs: 'id, title, createdAt, updatedAt, dirty, remoteId',
@@ -193,21 +194,8 @@ export class SongBinderDB extends Dexie {
         const setlists = await tx.table('setlists').toArray() as any[];
         for (const candidate of setlists) {
           if (candidate.songBinderRecoveryLabelCleanup !== true) continue;
-          const candidateIds = Array.isArray(candidate.songIds) ? candidate.songIds.map(String) : [];
-          const candidateSet = new Set(candidateIds);
-          const hasSyncedOriginal = setlists.some((other) => {
-            if (other.id === candidate.id || other.name !== candidate.name || !other.remoteId) return false;
-            const originalIds = Array.isArray(other.songIds) ? other.songIds.map(String) : [];
-            return candidateSet.size <= originalIds.length && [...candidateSet].every((id) => originalIds.includes(id));
-          });
-
-          if (hasSyncedOriginal) {
-            await tx.table('setlists').delete(candidate.id);
-            await tx.table('syncOutbox').delete(`setlist:${candidate.id}`);
-          } else {
-            delete candidate.songBinderRecoveryLabelCleanup;
-            await tx.table('setlists').put(candidate);
-          }
+          delete candidate.songBinderRecoveryLabelCleanup;
+          await tx.table('setlists').put(candidate);
         }
       });
   }
