@@ -545,11 +545,13 @@ class SyncEngine {
                   // Edit-vs-Delete conflict: preserve local edits under a new song ID
                   const conflictKey = `song:${legacyId}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteSong.deleted_at)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const restoredId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   songsToPut.push({
                     ...local,
                     id: restoredId,
+                    syncConflictKey: conflictKey,
                     title: appendCopyLabel(local.title, 'Untitled Song', 'Restored Copy'),
                     remoteId: undefined,
                     baseVersion: undefined,
@@ -845,11 +847,13 @@ class SyncEngine {
               // TRUE CONCURRENT CONFLICT: Preserve local edit as a new conflict copy, accept remote canonical
               const conflictKey = `song:${legacyId}:v${remoteVersion > 0 ? remoteVersion : remoteId}`;
               const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-              const conflictId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+              const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
               const now = Date.now();
               songsToPut.push({
                 ...local,
                 id: conflictId,
+                syncConflictKey: conflictKey,
                 title: appendCopyLabel(local.title, 'Untitled Song', 'Conflict Copy'),
                 remoteId: undefined,
                 baseVersion: undefined,
@@ -920,11 +924,13 @@ class SyncEngine {
                 if (local && (local.dirty === 1 || outbox?.op === 'upsert')) {
                   const conflictKey = `setlist:${legacyId}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteSetlist.deleted_at)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const restoredId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   setlistsToPut.push({
                     ...local,
                     id: restoredId,
+                    syncConflictKey: conflictKey,
                     name: appendCopyLabel(local.name, 'Untitled Setlist', 'Restored Copy'),
                     songIds: local.songIds.filter((sid) => !deletedSongIds.has(sid)),
                     remoteId: undefined,
@@ -1221,11 +1227,13 @@ class SyncEngine {
               // Setlist Conflict: keep local as conflict copy, apply remote canonical
               const conflictKey = `setlist:${legacyId}:v${remoteVersion > 0 ? remoteVersion : remoteId}`;
               const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-              const conflictId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+              const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
               const now = Date.now();
               setlistsToPut.push({
                 ...local,
                 id: conflictId,
+                syncConflictKey: conflictKey,
                 name: appendCopyLabel(local.name, 'Untitled Setlist', 'Conflict Copy'),
                 songIds: local.songIds.filter((sid) => !deletedSongIds.has(sid)),
                 remoteId: undefined,
@@ -1568,11 +1576,13 @@ class SyncEngine {
                 if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                   const conflictKey = `song:${sentSnapshot.id}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteRow.deleted_at)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const restoredId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   await db.songs.put({
                     ...latest,
                     id: restoredId,
+                    syncConflictKey: conflictKey,
                     title: appendCopyLabel(latest.title, 'Untitled Song', 'Restored Copy'),
                     remoteId: undefined,
                     baseVersion: undefined,
@@ -1608,11 +1618,13 @@ class SyncEngine {
               if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                 const conflictKey = `song:${sentSnapshot.id}:v${remoteVersion > 0 ? remoteVersion : String(remoteRow.id)}`;
                 const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                const conflictId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                 const now = Date.now();
                 await db.songs.put({
                   ...latest,
                   id: conflictId,
+                  syncConflictKey: conflictKey,
                   title: appendCopyLabel(latest.title, 'Untitled Song', 'Conflict Copy'),
                   remoteId: undefined,
                   baseVersion: undefined,
@@ -2031,11 +2043,13 @@ class SyncEngine {
                   if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                     const conflictKey = `setlist:${setlist.id}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteRow.deleted_at)}`;
                     const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                    const restoredId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                    const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                     const now = Date.now();
                     await db.setlists.put({
                       ...latest,
                       id: restoredId,
+                      syncConflictKey: conflictKey,
                       name: appendCopyLabel(latest.name, 'Untitled Setlist', 'Restored Copy'),
                       remoteId: undefined,
                       baseVersion: undefined,
@@ -2064,11 +2078,13 @@ class SyncEngine {
                 if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                   const conflictKey = `setlist:${setlist.id}:v${remoteVersion > 0 ? remoteVersion : String(remoteRow.id)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const conflictId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   await db.setlists.put({
                     ...latest,
                     id: conflictId,
+                    syncConflictKey: conflictKey,
                     name: appendCopyLabel(latest.name, 'Untitled Setlist', 'Conflict Copy'),
                     remoteId: undefined,
                     baseVersion: undefined,
