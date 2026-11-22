@@ -1516,7 +1516,11 @@ class SyncEngine {
         // B1. Push Song Deletions (version-conditional soft delete only)
         if (songDeletes.length > 0) {
           for (const delItem of songDeletes) {
-            await pushSingleSongDeletion(delItem);
+            try {
+              await pushSingleSongDeletion(delItem);
+            } catch (err: any) {
+              uploadErrors.push(`Song deletion "${delItem.entityId}" could not sync: ${err?.message || String(err)}`);
+            }
           }
         }
 
@@ -1694,7 +1698,11 @@ class SyncEngine {
           if (orphanKeys.length) await db.syncOutbox.bulkDelete(orphanKeys);
 
           for (const song of allTargetSongs) {
-            await pushSingleSongWithConcurrency(song);
+            try {
+              await pushSingleSongWithConcurrency(song);
+            } catch (err: any) {
+              uploadErrors.push(`Song "${song.title || song.id}" could not sync: ${err?.message || String(err)}`);
+            }
           }
         }
 
@@ -1950,7 +1958,11 @@ class SyncEngine {
         // B3. Push Setlist Deletions (version-conditional soft delete only, preserving setlist_songs)
         if (setlistDeletes.length > 0) {
           for (const delItem of setlistDeletes) {
-            await pushSingleSetlistDeletion(delItem);
+            try {
+              await pushSingleSetlistDeletion(delItem);
+            } catch (err: any) {
+              uploadErrors.push(`Setlist deletion "${delItem.entityId}" could not sync: ${err?.message || String(err)}`);
+            }
           }
         }
 
@@ -1988,9 +2000,13 @@ class SyncEngine {
               }
             }
             for (const missingSong of missingRemoteSongs) {
-              const res = await pushSingleSongWithConcurrency(missingSong);
-              if (res.activeInCloud && res.remoteId) {
-                songRemoteIdByLegacy.set(missingSong.id, res.remoteId);
+              try {
+                const res = await pushSingleSongWithConcurrency(missingSong);
+                if (res.activeInCloud && res.remoteId) {
+                  songRemoteIdByLegacy.set(missingSong.id, res.remoteId);
+                }
+              } catch (err: any) {
+                uploadErrors.push(`Referenced song "${missingSong.title || missingSong.id}" could not sync: ${err?.message || String(err)}`);
               }
             }
 
@@ -2142,6 +2158,7 @@ class SyncEngine {
             };
 
             for (const setlist of targetSetlists) {
+              try {
               const unresolvedLocalSongIds = (setlist.songIds || []).filter(
                 (sid) => existingLocalSongIds.has(sid) && !songRemoteIdByLegacy.has(sid)
               );
@@ -2251,6 +2268,9 @@ class SyncEngine {
                   await db.syncOutbox.delete(`setlist:${setlist.id}`);
                 }
               });
+              } catch (err: any) {
+                uploadErrors.push(`Setlist "${setlist.name || setlist.id}" could not sync: ${err?.message || String(err)}`);
+              }
             }
           }
         }
