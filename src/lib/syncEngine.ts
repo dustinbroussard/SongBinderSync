@@ -823,12 +823,14 @@ class SyncEngine {
               }
 
               // Content differs! Determine whether remote changed since our last sync baseline
+              // Without a recorded baseline we cannot prove the remote is unchanged.
+              // Preserve the local edit as a conflict copy instead of guessing from timestamps.
               const remoteChangedSinceBase =
                 local.baseVersion !== undefined
                   ? songsRes.hasServerVersion
                     ? remoteVersion !== local.baseVersion
                     : Boolean(local.serverUpdatedAt && remoteSong.updated_at !== local.serverUpdatedAt)
-                  : remoteUpdatedAt > (local.updatedAt || 0) + 2000;
+                  : true;
 
               if (!remoteChangedSinceBase) {
                 // Remote did not advance since our baseline; local wins cleanly and stays dirty for Phase B push
@@ -1198,12 +1200,14 @@ class SyncEngine {
                 continue;
               }
 
+              // Without a recorded baseline we cannot prove the remote is unchanged.
+              // Preserve the local edit as a conflict copy instead of guessing from timestamps.
               const remoteChangedSinceBase =
                 local.baseVersion !== undefined
                   ? setlistsRes.hasServerVersion
                     ? remoteVersion !== local.baseVersion
                     : Boolean(local.serverUpdatedAt && remoteSetlist.updated_at !== local.serverUpdatedAt)
-                  : remoteUpdatedAt > (local.updatedAt || 0) + 2000;
+                  : true;
 
               if (!remoteChangedSinceBase) {
                 setlistsToPut.push({
