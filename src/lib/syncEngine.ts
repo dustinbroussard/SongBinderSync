@@ -253,6 +253,11 @@ class SyncEngine {
       const songs = await db.songs.toArray();
       const setlists = await db.setlists.toArray();
 
+      // A merge creates fresh records for the new account. Old-account deletions
+      // and pending operations must not be replayed against that account.
+      await db.tombstones.clear();
+      await db.syncOutbox.clear();
+
       if (songs.length > 0) {
         await db.songs.bulkPut(
           songs.map((s) => ({
