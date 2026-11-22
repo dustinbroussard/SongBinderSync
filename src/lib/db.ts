@@ -141,7 +141,7 @@ export class SongBinderDB extends Dexie {
       })
       .upgrade(async (tx) => {
         const now = Date.now();
-        const suffix = /\s+\((?:Restored Copy|Conflict Copy)\)$/;
+        const suffix = /\s+\(Restored Copy\)$/;
         const songs = await tx.table('songs').toArray();
         const setlists = await tx.table('setlists').toArray();
 
@@ -166,6 +166,7 @@ export class SongBinderDB extends Dexie {
           setlist.name = setlist.name.replace(suffix, '').trim() || 'Untitled Setlist';
           setlist.updatedAt = now;
           setlist.dirty = 1;
+          setlist.songBinderRecoveryLabelCleanup = true;
           await tx.table('setlists').put(setlist);
           await tx.table('syncOutbox').put({
             key: `setlist:${setlist.id}`,
@@ -175,6 +176,38 @@ export class SongBinderDB extends Dexie {
             queuedAt: now,
             attempts: 0
           });
+        }
+      });
+
+    // Version 5: prevent label-cleanup recovery snapshots from being uploaded
+    // as duplicate setlists when an already-synced original contains the same songs.
+    this.version(5)
+      .stores({
+        songs: 'id, title, createdAt, updatedAt, dirty, remoteId',
+        setlists: 'id, name, createdAt, updatedAt, dirty, remoteId',
+        tombstones: 'id, type, deletedAt',
+        syncOutbox: 'key, entityType, entityId, queuedAt',
+        syncMeta: 'id'
+      })
+      .upgrade(async (tx) => {
+        const setlists = await tx.table('setlists').toArray() as any[];
+        for (const candidate of setlists) {
+          if (candidate.songBinderRecoveryLabelCleanup !== true) continue;
+          const candidateIds = Array.isArray(candidate.songIds) ? candidate.songIds.map(String) : [];
+          const candidateSet = new Set(candidateIds);
+          const hasSyncedOriginal = setlists.some((other) => {
+            if (other.id === candidate.id || other.name !== candidate.name || !other.remoteId) return false;
+            const originalIds = Array.isArray(other.songIds) ? other.songIds.map(String) : [];
+            return candidateSet.size <= originalIds.length && [...candidateSet].every((id) => originalIds.includes(id));
+          });
+
+          if (hasSyncedOriginal) {
+            await tx.table('setlists').delete(candidate.id);
+            await tx.table('syncOutbox').delete(`setlist:${candidate.id}`);
+          } else {
+            delete candidate.songBinderRecoveryLabelCleanup;
+            await tx.table('setlists').put(candidate);
+          }
         }
       });
   }
