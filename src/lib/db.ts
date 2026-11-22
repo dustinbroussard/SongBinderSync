@@ -128,6 +128,51 @@ export class SongBinderDB extends Dexie {
           });
         }
       });
+
+    // Version 4: remove internal recovery labels from song/setlist names.
+    // Preserve the recovered records and queue the clean names for cloud sync.
+    this.version(4)
+      .stores({
+        songs: 'id, title, createdAt, updatedAt, dirty, remoteId',
+        setlists: 'id, name, createdAt, updatedAt, dirty, remoteId',
+        tombstones: 'id, type, deletedAt',
+        syncOutbox: 'key, entityType, entityId, queuedAt',
+        syncMeta: 'id'
+      })
+      .upgrade(async (tx) => {
+        const now = Date.now();
+        const suffix = /\\s+\\((?:Restored Copy|Conflict Copy)\\)$/;
+
+        await tx.table('songs').toCollection().modify(async (song: any) => {
+          if (typeof song.title !== 'string' || !suffix.test(song.title)) return;
+          song.title = song.title.replace(suffix, '').trim() || 'Untitled Song';
+          song.updatedAt = now;
+          song.dirty = 1;
+          await tx.table('syncOutbox').put({
+            key: `song:${song.id}`,
+            entityType: 'song',
+            entityId: song.id,
+            op: 'upsert',
+            queuedAt: now,
+            attempts: 0
+          });
+        });
+
+        await tx.table('setlists').toCollection().modify(async (setlist: any) => {
+          if (typeof setlist.name !== 'string' || !suffix.test(setlist.name)) return;
+          setlist.name = setlist.name.replace(suffix, '').trim() || 'Untitled Setlist';
+          setlist.updatedAt = now;
+          setlist.dirty = 1;
+          await tx.table('syncOutbox').put({
+            key: `setlist:${setlist.id}`,
+            entityType: 'setlist',
+            entityId: setlist.id,
+            op: 'upsert',
+            queuedAt: now,
+            attempts: 0
+          });
+        });
+      });
   }
 }
 
