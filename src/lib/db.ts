@@ -699,7 +699,8 @@ function stableImportMetadata(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableImportMetadata);
   if (value && typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, child]) => child !== undefined)
+      // Sync conflict status is app bookkeeping, not part of a song's content identity.
+      .filter(([key, child]) => child !== undefined && key !== 'syncConflictStatus')
       .sort(([left], [right]) => left.localeCompare(right));
     return Object.fromEntries(entries.map(([key, child]) => [key, stableImportMetadata(child)]));
   }
@@ -828,8 +829,17 @@ export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]):
           if (existingByFingerprint.get(previousFingerprint)?.id === existingBySameId.id) {
             existingByFingerprint.delete(previousFingerprint);
           }
+          const importedMetadata = song.metadata || {};
+          const existingConflictStatus = existingBySameId.metadata?.syncConflictStatus;
           const updatedSong: Song = {
             ...song,
+            metadata: {
+              ...importedMetadata,
+              ...(importedMetadata.syncConflictStatus === undefined && existingConflictStatus
+                ? { syncConflictStatus: existingConflictStatus }
+                : {})
+            },
+            syncConflictKey: existingBySameId.syncConflictKey,
             remoteId: existingBySameId.remoteId,
             baseVersion: existingBySameId.baseVersion,
             serverUpdatedAt: existingBySameId.serverUpdatedAt,
