@@ -506,9 +506,11 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
               Cloud Sync
             </h3>
             <p className="text-sm text-gray-400 mb-3 font-body leading-relaxed">
-              {user
-                ? `Signed in as ${user.email}. Changes sync automatically and preserve offline conflicts as copies.`
-                : "Sign in to enable automatic multi-device sync with Supabase."}
+              {diagnosticMode
+                ? "Read-only diagnostic mode is active. Sync and restore actions are disabled in this tab."
+                : user
+                  ? `Signed in as ${user.email}. Changes sync automatically and preserve offline conflicts as copies.`
+                  : "Sign in to enable automatic multi-device sync with Supabase."}
             </p>
 
             {user && (
@@ -542,7 +544,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
               <button
                 onClick={() => handleSyncNow(true)}
-                disabled={syncState.isSyncing || !user}
+                disabled={diagnosticMode || syncState.isSyncing || !user}
                 className="w-full flex items-center justify-center gap-2 bg-bg-secondary border border-white border-opacity-10 text-gray-300 text-xs font-medium px-4 py-2 rounded-lg hover:border-primary-accent transition-all-custom disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Download className="w-3.5 h-3.5 text-primary-accent" />
