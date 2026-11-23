@@ -13,7 +13,8 @@ interface SettingsModalProps {
 
 export default function SettingsModal({ onClose }: SettingsModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);\n  const [pendingImport, setPendingImport] = useState<{ songs: Song[]; setlists: Setlist[]; summary: BackupImportSummary } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [pendingImport, setPendingImport] = useState<{ songs: Song[]; setlists: Setlist[]; summary: BackupImportSummary } | null>(null);
   const [showDeleteSongsConfirm, setShowDeleteSongsConfirm] = useState(false);
   const [showDeleteSetlistsConfirm, setShowDeleteSetlistsConfirm] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
