@@ -253,6 +253,11 @@ class SyncEngine {
       const songs = await db.songs.toArray();
       const setlists = await db.setlists.toArray();
 
+      // A merge creates fresh records for the new account. Old-account deletions
+      // and pending operations must not be replayed against that account.
+      await db.tombstones.clear();
+      await db.syncOutbox.clear();
+
       if (songs.length > 0) {
         await db.songs.bulkPut(
           songs.map((s) => ({
@@ -491,6 +496,14 @@ class SyncEngine {
 
         const blockedDeletionErrors: string[] = [];
         const uploadErrors: string[] = [];
+        // Only songs confirmed active in the completed cloud snapshot may be linked
+        // from a setlist. Local remoteId values can outlive a cloud soft-delete.
+        const activeRemoteSongLegacyIds = new Set(
+          songsRes.rows
+            .filter((row: any) => !row?.deleted_at)
+            .map((row: any) => String(row?.legacy_id || '').trim())
+            .filter(Boolean)
+        );
         let maxConfirmedVersion = maxPulledVersion;
 
         await db.transaction(
@@ -545,11 +558,13 @@ class SyncEngine {
                   // Edit-vs-Delete conflict: preserve local edits under a new song ID
                   const conflictKey = `song:${legacyId}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteSong.deleted_at)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const restoredId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   songsToPut.push({
                     ...local,
                     id: restoredId,
+                    syncConflictKey: conflictKey,
                     title: appendCopyLabel(local.title, 'Untitled Song', 'Restored Copy'),
                     remoteId: undefined,
                     baseVersion: undefined,
@@ -823,12 +838,14 @@ class SyncEngine {
               }
 
               // Content differs! Determine whether remote changed since our last sync baseline
+              // Without a recorded baseline we cannot prove the remote is unchanged.
+              // Preserve the local edit as a conflict copy instead of guessing from timestamps.
               const remoteChangedSinceBase =
                 local.baseVersion !== undefined
                   ? songsRes.hasServerVersion
                     ? remoteVersion !== local.baseVersion
                     : Boolean(local.serverUpdatedAt && remoteSong.updated_at !== local.serverUpdatedAt)
-                  : remoteUpdatedAt > (local.updatedAt || 0) + 2000;
+                  : true;
 
               if (!remoteChangedSinceBase) {
                 // Remote did not advance since our baseline; local wins cleanly and stays dirty for Phase B push
@@ -843,11 +860,13 @@ class SyncEngine {
               // TRUE CONCURRENT CONFLICT: Preserve local edit as a new conflict copy, accept remote canonical
               const conflictKey = `song:${legacyId}:v${remoteVersion > 0 ? remoteVersion : remoteId}`;
               const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-              const conflictId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+              const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
               const now = Date.now();
               songsToPut.push({
                 ...local,
                 id: conflictId,
+                syncConflictKey: conflictKey,
                 title: appendCopyLabel(local.title, 'Untitled Song', 'Conflict Copy'),
                 remoteId: undefined,
                 baseVersion: undefined,
@@ -918,11 +937,13 @@ class SyncEngine {
                 if (local && (local.dirty === 1 || outbox?.op === 'upsert')) {
                   const conflictKey = `setlist:${legacyId}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteSetlist.deleted_at)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const restoredId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   setlistsToPut.push({
                     ...local,
                     id: restoredId,
+                    syncConflictKey: conflictKey,
                     name: appendCopyLabel(local.name, 'Untitled Setlist', 'Restored Copy'),
                     songIds: local.songIds.filter((sid) => !deletedSongIds.has(sid)),
                     remoteId: undefined,
@@ -1198,12 +1219,14 @@ class SyncEngine {
                 continue;
               }
 
+              // Without a recorded baseline we cannot prove the remote is unchanged.
+              // Preserve the local edit as a conflict copy instead of guessing from timestamps.
               const remoteChangedSinceBase =
                 local.baseVersion !== undefined
                   ? setlistsRes.hasServerVersion
                     ? remoteVersion !== local.baseVersion
                     : Boolean(local.serverUpdatedAt && remoteSetlist.updated_at !== local.serverUpdatedAt)
-                  : remoteUpdatedAt > (local.updatedAt || 0) + 2000;
+                  : true;
 
               if (!remoteChangedSinceBase) {
                 setlistsToPut.push({
@@ -1217,11 +1240,13 @@ class SyncEngine {
               // Setlist Conflict: keep local as conflict copy, apply remote canonical
               const conflictKey = `setlist:${legacyId}:v${remoteVersion > 0 ? remoteVersion : remoteId}`;
               const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-              const conflictId = existingConflict?.entityId || uuidv4();
+                  const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+              const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
               const now = Date.now();
               setlistsToPut.push({
                 ...local,
                 id: conflictId,
+                syncConflictKey: conflictKey,
                 name: appendCopyLabel(local.name, 'Untitled Setlist', 'Conflict Copy'),
                 songIds: local.songIds.filter((sid) => !deletedSongIds.has(sid)),
                 remoteId: undefined,
@@ -1499,7 +1524,11 @@ class SyncEngine {
         // B1. Push Song Deletions (version-conditional soft delete only)
         if (songDeletes.length > 0) {
           for (const delItem of songDeletes) {
-            await pushSingleSongDeletion(delItem);
+            try {
+              await pushSingleSongDeletion(delItem);
+            } catch (err: any) {
+              uploadErrors.push(`Song deletion "${delItem.entityId}" could not sync: ${err?.message || String(err)}`);
+            }
           }
         }
 
@@ -1564,11 +1593,13 @@ class SyncEngine {
                 if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                   const conflictKey = `song:${sentSnapshot.id}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteRow.deleted_at)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const restoredId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   await db.songs.put({
                     ...latest,
                     id: restoredId,
+                    syncConflictKey: conflictKey,
                     title: appendCopyLabel(latest.title, 'Untitled Song', 'Restored Copy'),
                     remoteId: undefined,
                     baseVersion: undefined,
@@ -1604,11 +1635,13 @@ class SyncEngine {
               if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                 const conflictKey = `song:${sentSnapshot.id}:v${remoteVersion > 0 ? remoteVersion : String(remoteRow.id)}`;
                 const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                const conflictId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.songs.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                 const now = Date.now();
                 await db.songs.put({
                   ...latest,
                   id: conflictId,
+                  syncConflictKey: conflictKey,
                   title: appendCopyLabel(latest.title, 'Untitled Song', 'Conflict Copy'),
                   remoteId: undefined,
                   baseVersion: undefined,
@@ -1673,7 +1706,11 @@ class SyncEngine {
           if (orphanKeys.length) await db.syncOutbox.bulkDelete(orphanKeys);
 
           for (const song of allTargetSongs) {
-            await pushSingleSongWithConcurrency(song);
+            try {
+              await pushSingleSongWithConcurrency(song);
+            } catch (err: any) {
+              uploadErrors.push(`Song "${song.title || song.id}" could not sync: ${err?.message || String(err)}`);
+            }
           }
         }
 
@@ -1929,7 +1966,11 @@ class SyncEngine {
         // B3. Push Setlist Deletions (version-conditional soft delete only, preserving setlist_songs)
         if (setlistDeletes.length > 0) {
           for (const delItem of setlistDeletes) {
-            await pushSingleSetlistDeletion(delItem);
+            try {
+              await pushSingleSetlistDeletion(delItem);
+            } catch (err: any) {
+              uploadErrors.push(`Setlist deletion "${delItem.entityId}" could not sync: ${err?.message || String(err)}`);
+            }
           }
         }
 
@@ -1949,7 +1990,9 @@ class SyncEngine {
             let allSongs = await db.songs.toArray();
             const songRemoteIdByLegacy = new Map<string, string>();
             for (const s of allSongs) {
-              if (s.remoteId) songRemoteIdByLegacy.set(s.id, s.remoteId);
+              if (s.remoteId && activeRemoteSongLegacyIds.has(s.id)) {
+                songRemoteIdByLegacy.set(s.id, s.remoteId);
+              }
             }
 
             // Safety: if any setlist references an active local song missing a remoteId, push it with concurrency first
@@ -1967,9 +2010,14 @@ class SyncEngine {
               }
             }
             for (const missingSong of missingRemoteSongs) {
-              const res = await pushSingleSongWithConcurrency(missingSong);
-              if (res.activeInCloud && res.remoteId) {
-                songRemoteIdByLegacy.set(missingSong.id, res.remoteId);
+              try {
+                const res = await pushSingleSongWithConcurrency(missingSong);
+                if (res.activeInCloud && res.remoteId) {
+                  songRemoteIdByLegacy.set(missingSong.id, res.remoteId);
+                  activeRemoteSongLegacyIds.add(missingSong.id);
+                }
+              } catch (err: any) {
+                uploadErrors.push(`Referenced song "${missingSong.title || missingSong.id}" could not sync: ${err?.message || String(err)}`);
               }
             }
 
@@ -1977,7 +2025,9 @@ class SyncEngine {
               allSongs = await db.songs.toArray();
               songRemoteIdByLegacy.clear();
               for (const s of allSongs) {
-                if (s.remoteId) songRemoteIdByLegacy.set(s.id, s.remoteId);
+                if (s.remoteId && activeRemoteSongLegacyIds.has(s.id)) {
+                  songRemoteIdByLegacy.set(s.id, s.remoteId);
+                }
               }
             }
             const existingLocalSongIds = new Set(allSongs.map((s) => s.id));
@@ -2005,7 +2055,11 @@ class SyncEngine {
                   for (const extra of extraSongs) {
                     const extId = String(extra?.id || '').trim();
                     const extLegacy = String(extra?.legacy_id || '').trim();
-                    if (extId && extLegacy) supabaseSongIdToLegacyId.set(extId, extLegacy);
+                    // A remote setlist may still contain a relationship to a soft-deleted song.
+                    // Never reintroduce that relationship into the local active setlist.
+                    if (extId && extLegacy && !extra?.deleted_at) {
+                      supabaseSongIdToLegacyId.set(extId, extLegacy);
+                    }
                   }
                 }
                 for (const uuid of rawRefs) {
@@ -2027,11 +2081,13 @@ class SyncEngine {
                   if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                     const conflictKey = `setlist:${setlist.id}:deleted:${remoteVersion > 0 ? remoteVersion : String(remoteRow.deleted_at)}`;
                     const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                    const restoredId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                    const restoredId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                     const now = Date.now();
                     await db.setlists.put({
                       ...latest,
                       id: restoredId,
+                      syncConflictKey: conflictKey,
                       name: appendCopyLabel(latest.name, 'Untitled Setlist', 'Restored Copy'),
                       remoteId: undefined,
                       baseVersion: undefined,
@@ -2060,11 +2116,13 @@ class SyncEngine {
                 if (latest && (!currentOutbox || currentOutbox.op === 'upsert')) {
                   const conflictKey = `setlist:${setlist.id}:v${remoteVersion > 0 ? remoteVersion : String(remoteRow.id)}`;
                   const existingConflict = outboxItems.find((o) => o.conflictKey === conflictKey);
-                  const conflictId = existingConflict?.entityId || uuidv4();
+                const existingCopy = (await db.setlists.toArray()).find((record) => record.syncConflictKey === conflictKey);
+                  const conflictId = existingConflict?.entityId || existingCopy?.id || uuidv4();
                   const now = Date.now();
                   await db.setlists.put({
                     ...latest,
                     id: conflictId,
+                    syncConflictKey: conflictKey,
                     name: appendCopyLabel(latest.name, 'Untitled Setlist', 'Conflict Copy'),
                     remoteId: undefined,
                     baseVersion: undefined,
@@ -2117,6 +2175,7 @@ class SyncEngine {
             };
 
             for (const setlist of targetSetlists) {
+              try {
               const unresolvedLocalSongIds = (setlist.songIds || []).filter(
                 (sid) => existingLocalSongIds.has(sid) && !songRemoteIdByLegacy.has(sid)
               );
@@ -2226,6 +2285,9 @@ class SyncEngine {
                   await db.syncOutbox.delete(`setlist:${setlist.id}`);
                 }
               });
+              } catch (err: any) {
+                uploadErrors.push(`Setlist "${setlist.name || setlist.id}" could not sync: ${err?.message || String(err)}`);
+              }
             }
           }
         }

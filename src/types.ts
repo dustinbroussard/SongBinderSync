@@ -28,6 +28,8 @@ export type Song = {
   baseVersion?: number;
   serverUpdatedAt?: string;
   dirty?: 0 | 1;
+  /** Stable identity for a conflict/restoration copy; survives outbox cleanup. */
+  syncConflictKey?: string;
 };
 
 export type Setlist = {
@@ -41,6 +43,8 @@ export type Setlist = {
   baseVersion?: number;
   serverUpdatedAt?: string;
   dirty?: 0 | 1;
+  /** Stable identity for a conflict/restoration copy; survives outbox cleanup. */
+  syncConflictKey?: string;
 };
 
 export type SyncStatus =
