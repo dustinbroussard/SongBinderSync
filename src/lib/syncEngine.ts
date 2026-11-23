@@ -218,6 +218,153 @@ class SyncEngine {
     }, delayMs);
   }
 
+  /**
+   * Replaces this device's local database with a fresh, complete Supabase snapshot.
+   * Local state is kept in memory until the cloud pull succeeds so a failed restore
+   * can put the device back exactly as it was before the attempt.
+   */
+  async restoreFromCloud(expectedUserId: string): Promise<SyncStateSnapshot> {
+    const cleanExpectedUserId = String(expectedUserId || '').trim();
+    if (!cleanExpectedUserId) {
+      throw new Error('A signed-in account is required to restore from cloud.');
+    }
+    if (!isConfigured()) {
+      throw new Error('Supabase is not configured on this device.');
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      throw new Error('You are offline. Connect to the internet before restoring from cloud.');
+    }
+
+    // Stop timers/realtime nudges before waiting for any active sync to finish.
+    this.stopLifecycle();
+    if (this.inFlightPromise) {
+      await this.inFlightPromise;
+    }
+
+    let restoreSucceeded = false;
+    let originalState: {
+      songs: Song[];
+      setlists: Setlist[];
+      tombstones: Tombstone[];
+      syncOutbox: SyncOutboxItem[];
+      syncMeta: any[];
+    } | null = null;
+
+    try {
+      let session = await getSession();
+      if (!session?.user?.id) {
+        throw new Error('Your Supabase session has expired. Sign in again before restoring.');
+      }
+      const expiresAtMs = (session.expires_at || 0) * 1000;
+      if (expiresAtMs > 0 && expiresAtMs - Date.now() < 60_000) {
+        session = await refreshAuthSession();
+      }
+      if (!session?.user?.id || String(session.user.id).trim() !== cleanExpectedUserId) {
+        throw new Error('The signed-in account changed. Please reload the app and try again.');
+      }
+
+      // Preflight both complete snapshots before touching the local database.
+      const [cloudSongs, cloudSetlists] = await Promise.all([
+        fetchSongsForUser(cleanExpectedUserId),
+        fetchSetlistsForUser(cleanExpectedUserId),
+      ]);
+      if (!cloudSongs.isComplete || !cloudSetlists.isComplete || !cloudSetlists.relationshipsComplete) {
+        throw new Error('Supabase did not provide a complete library snapshot. Your local data has not been changed.');
+      }
+
+      originalState = {
+        songs: await db.songs.toArray(),
+        setlists: await db.setlists.toArray(),
+        tombstones: await db.tombstones.toArray(),
+        syncOutbox: await db.syncOutbox.toArray(),
+        syncMeta: await db.syncMeta.toArray(),
+      };
+
+      // Clear every local sync queue/checkpoint as well as the library. No cloud
+      // delete calls are made here; the next operation is a pull-only reconciliation.
+      await db.transaction(
+        'rw',
+        [db.songs, db.setlists, db.tombstones, db.syncOutbox, db.syncMeta],
+        async () => {
+          await db.songs.clear();
+          await db.setlists.clear();
+          await db.tombstones.clear();
+          await db.syncOutbox.clear();
+          await db.syncMeta.put({
+            id: 'state',
+            activeUserId: cleanExpectedUserId,
+            lastSyncVersion: 0,
+            lastSyncedAt: null,
+            lastReconciledAt: null,
+          });
+        }
+      );
+
+      this.emit({
+        status: 'syncing',
+        isSyncing: false,
+        pendingCount: 0,
+        lastSyncedAt: null,
+        lastSyncVersion: 0,
+        lastConflictCount: 0,
+        schemaWarning: null,
+        lastError: null,
+        accountMismatch: null,
+      });
+
+      const result = await this.syncNow('restore_from_cloud');
+      if (result.status !== 'synced' || result.pendingCount !== 0) {
+        throw new Error(
+          result.lastError ||
+          (result.pendingCount > 0
+            ? 'The cloud library downloaded, but some local sync work remains. The previous local data has been restored.'
+            : 'The cloud restore did not complete successfully. The previous local data has been restored.')
+        );
+      }
+
+      restoreSucceeded = true;
+      return result;
+    } catch (err: any) {
+      if (originalState) {
+        try {
+          await db.transaction(
+            'rw',
+            [db.songs, db.setlists, db.tombstones, db.syncOutbox, db.syncMeta],
+            async () => {
+              await db.songs.clear();
+              await db.setlists.clear();
+              await db.tombstones.clear();
+              await db.syncOutbox.clear();
+              await db.syncMeta.clear();
+              if (originalState!.songs.length) await db.songs.bulkPut(originalState!.songs);
+              if (originalState!.setlists.length) await db.setlists.bulkPut(originalState!.setlists);
+              if (originalState!.tombstones.length) await db.tombstones.bulkPut(originalState!.tombstones);
+              if (originalState!.syncOutbox.length) await db.syncOutbox.bulkPut(originalState!.syncOutbox);
+              if (originalState!.syncMeta.length) await db.syncMeta.bulkPut(originalState!.syncMeta);
+            }
+          );
+        } catch (rollbackError) {
+          console.error('[SyncEngine] Failed to roll back local data after cloud restore:', rollbackError);
+          this.emit({
+            status: 'error',
+            isSyncing: false,
+            lastError: 'Restore failed and the previous local data could not be fully restored. Do not make further changes on this device; contact support.',
+          });
+          throw rollbackError;
+        }
+      }
+      const message = err?.message || 'Cloud restore failed.';
+      this.emit({ status: 'error', isSyncing: false, lastError: message });
+      throw new Error(message);
+    } finally {
+      // Restart normal sync only after the restore/rollback is complete.
+      this.startLifecycle(cleanExpectedUserId);
+      if (restoreSucceeded) {
+        this.emit({ status: 'synced', isSyncing: false, pendingCount: 0, lastError: null });
+      }
+    }
+  }
+
   async resolveAccountMismatchReplace(newUserId: string): Promise<SyncStateSnapshot> {
     await db.transaction('rw', [db.songs, db.setlists, db.tombstones, db.syncOutbox, db.syncMeta], async () => {
       await db.songs.clear();
