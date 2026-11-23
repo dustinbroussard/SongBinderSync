@@ -754,10 +754,19 @@ export async function previewBackupImport(songs: Song[], setlists: Setlist[]): P
         if (byFingerprint.get(previousFingerprint)?.id === existingById.id) {
           byFingerprint.delete(previousFingerprint);
         }
+        const previousTitle = normalizeSongText(existingById.title);
+        const nextTitle = normalizeSongText(song.title);
+        if (previousTitle !== nextTitle) {
+          byTitle.set(previousTitle, (byTitle.get(previousTitle) || []).filter((candidate) => candidate.id !== existingById.id));
+        }
       }
       // Treat the post-import version as the canonical match for later entries
       // in this same backup, including entries with different IDs.
       byFingerprint.set(fingerprint, existingById);
+      const nextTitle = normalizeSongText(song.title);
+      if (!(byTitle.get(nextTitle) || []).some((candidate) => candidate.id === existingById.id)) {
+        byTitle.set(nextTitle, [...(byTitle.get(nextTitle) || []), song]);
+      }
       seenIncoming.add(fingerprint);
       continue;
     }
@@ -770,6 +779,7 @@ export async function previewBackupImport(songs: Song[], setlists: Setlist[]): P
     if ((byTitle.get(normalizedTitle) || []).length > 0) {
       summary.sameTitleDifferentContent++;
     }
+    byTitle.set(normalizedTitle, [...(byTitle.get(normalizedTitle) || []), song]);
     seenIncoming.add(fingerprint);
   }
   return summary;
