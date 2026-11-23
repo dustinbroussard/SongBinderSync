@@ -129,9 +129,10 @@ export default function MainLayout() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleSignOut}
+                disabled={syncPausedForDiagnostics}
                 aria-label="Sign out"
-                className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom"
-                title="Sign out"
+                className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom disabled:opacity-40"
+                title={syncPausedForDiagnostics ? "Sign out is disabled during local queue inspection" : "Sign out"}
               >
                 <LogOut className="w-3.5 h-3.5 md:w-4 md:h-4" />
               </motion.button>
