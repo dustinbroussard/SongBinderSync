@@ -131,6 +131,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     if (!file) return;
 
     setImporting(true);
+    setPendingImport(null);
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
@@ -157,11 +158,15 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
           }))
         : [];
 
-      await bulkImportBackupLocal(importedSongs, importedSetlists);
-      showNotice(`Imported ${importedSongs.length} song(s) and ${importedSetlists.length} setlist(s).`);
+      // Preview is deliberately read-only: nothing is written until the user confirms.
+      const summary = await previewBackupImport(importedSongs, importedSetlists);
+      setPendingImport({ songs: importedSongs, setlists: importedSetlists, summary });
+      showNotice(
+        `Backup preview ready: ${summary.added} new, ${summary.matched} matched, and ${summary.updated} updated song(s).`
+      );
     } catch (err) {
       console.error(err);
-      showNotice("Failed to import backup. Please ensure the file is valid JSON.", "error");
+      showNotice("Failed to read backup. Please ensure the file is valid JSON.", "error");
     } finally {
       setImporting(false);
       if (fileInputRef.current) {
