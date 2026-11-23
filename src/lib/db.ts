@@ -695,16 +695,29 @@ function normalizeSongText(value: unknown): string {
   return String(value ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 }
 
-/** Stable content identity for import matching; excludes presentation-only notes and formatting. */
+function stableImportMetadata(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableImportMetadata);
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return Object.fromEntries(entries.map(([key, child]) => [key, stableImportMetadata(child)]));
+  }
+  return typeof value === 'string' ? value.normalize('NFKC') : value;
+}
+
+/**
+ * Stable content identity for imports. Keep every metadata field in the identity:
+ * notes, tags, performance notes, and production notes can all be meaningful song data.
+ * Only normalize title whitespace/case and platform-specific lyric line endings.
+ */
 function songImportFingerprint(song: Song): string {
-  const metadata = song.metadata || {};
+  const lyrics = String(song.lyrics ?? '').normalize('NFKC').replace(/\r\n?/g, '\n');
   return JSON.stringify([
     normalizeSongText(song.title),
-    normalizeSongText(song.lyrics),
+    lyrics,
     typeof song.bpm === 'number' ? song.bpm : null,
-    normalizeSongText(metadata.key),
-    typeof metadata.tempo === 'number' ? metadata.tempo : null,
-    normalizeSongText(metadata.timeSignature)
+    stableImportMetadata(song.metadata || {})
   ]);
 }
 
@@ -733,8 +746,19 @@ export async function previewBackupImport(songs: Song[], setlists: Setlist[]): P
     const existingById = byId.get(song.id);
     const fingerprint = songImportFingerprint(song);
     if (existingById) {
-      if (songImportFingerprint(existingById) === fingerprint) summary.matched++;
-      else summary.updated++;
+      const previousFingerprint = songImportFingerprint(existingById);
+      if (previousFingerprint === fingerprint) {
+        summary.matched++;
+      } else {
+        summary.updated++;
+        if (byFingerprint.get(previousFingerprint)?.id === existingById.id) {
+          byFingerprint.delete(previousFingerprint);
+        }
+      }
+      // Treat the post-import version as the canonical match for later entries
+      // in this same backup, including entries with different IDs.
+      byFingerprint.set(fingerprint, existingById);
+      seenIncoming.add(fingerprint);
       continue;
     }
     if (byFingerprint.has(fingerprint) || seenIncoming.has(fingerprint)) {
@@ -742,7 +766,8 @@ export async function previewBackupImport(songs: Song[], setlists: Setlist[]): P
       continue;
     }
     summary.added++;
-    if ((byTitle.get(normalizeSongText(song.title)) || []).length > 0) {
+    const normalizedTitle = normalizeSongText(song.title);
+    if ((byTitle.get(normalizedTitle) || []).length > 0) {
       summary.sameTitleDifferentContent++;
     }
     seenIncoming.add(fingerprint);
@@ -781,16 +806,28 @@ export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]):
       const fingerprint = songImportFingerprint(song);
       if (existingBySameId) {
         canonicalIdByImportedId.set(song.id, existingBySameId.id);
-        if (songImportFingerprint(existingBySameId) === fingerprint) {
+        const previousFingerprint = songImportFingerprint(existingBySameId);
+        if (previousFingerprint === fingerprint) {
           summary.matched++;
+          existingByFingerprint.set(fingerprint, existingBySameId);
+          incomingByFingerprint.set(fingerprint, existingBySameId.id);
         } else {
-          songsToWrite.push({
+          // The ID is the stable identity for this record, so update it rather than
+          // creating another song. Remove its old fingerprint before registering
+          // the updated content as canonical for later entries in this backup.
+          if (existingByFingerprint.get(previousFingerprint)?.id === existingBySameId.id) {
+            existingByFingerprint.delete(previousFingerprint);
+          }
+          const updatedSong: Song = {
             ...song,
             remoteId: existingBySameId.remoteId,
             baseVersion: existingBySameId.baseVersion,
             serverUpdatedAt: existingBySameId.serverUpdatedAt,
             dirty: 1
-          });
+          };
+          songsToWrite.push(updatedSong);
+          existingByFingerprint.set(fingerprint, updatedSong);
+          incomingByFingerprint.set(fingerprint, updatedSong.id);
           summary.updated++;
         }
         continue;
@@ -810,13 +847,18 @@ export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]):
         continue;
       }
 
-      if ((existingByTitle.get(normalizeSongText(song.title)) || []).length > 0) {
+      const normalizedTitle = normalizeSongText(song.title);
+      if ((existingByTitle.get(normalizedTitle) || []).length > 0) {
         summary.sameTitleDifferentContent++;
       }
       canonicalIdByImportedId.set(song.id, song.id);
       incomingByFingerprint.set(fingerprint, song.id);
       songsToWrite.push({ ...song, dirty: 1 });
       summary.added++;
+      existingByTitle.set(normalizedTitle, [
+        ...(existingByTitle.get(normalizedTitle) || []),
+        song
+      ]);
     }
 
     if (songsToWrite.length > 0) {
