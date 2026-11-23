@@ -1,4 +1,4 @@
-import { X, Download, Upload, Check, Monitor, Moon, Sun, Palette, Trash2, AlertTriangle, Cloud, RefreshCw } from "lucide-react";
+import { X, Download, Upload, Check, Monitor, Moon, Sun, Palette, Trash2, AlertTriangle, Cloud, RefreshCw, CloudDownload } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { db, clearAllSongsLocal, clearAllSetlistsLocal, bulkImportBackupLocal } from "../lib/db";
 import { v4 as uuidv4 } from "uuid";
@@ -15,7 +15,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [showDeleteSongsConfirm, setShowDeleteSongsConfirm] = useState(false);
-  const [showDeleteSetlistsConfirm, setShowDeleteSetlistsConfirm] = useState(false);
+  const [showDeleteSetlistsConfirm, setShowDeleteSetlistsConfirm] = useState(false);\n  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);\n  const [restoring, setRestoring] = useState(false);
   const [notice, setNotice] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const { theme, setTheme, accent, setAccent } = useTheme();
   const { user } = useAuth();
@@ -357,6 +357,62 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 <Download className="w-3.5 h-3.5 text-primary-accent" />
                 Full Cloud Re-Sync
               </button>
+
+              <div className="mt-3 pt-3 border-t border-white/10">
+                <p className="text-xs text-gray-400 mb-2">
+                  If this device gets out of sync, replace its local library with the current copy stored in Supabase.
+                </p>
+                {!showRestoreConfirm ? (
+                  <button
+                    onClick={() => setShowRestoreConfirm(true)}
+                    disabled={syncState.isSyncing || restoring || !user}
+                    className="w-full flex items-center justify-center gap-2 bg-bg-secondary border border-primary-accent/40 text-primary-accent font-semibold px-4 py-2 rounded-lg hover:bg-primary-accent/10 transition-all-custom disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <CloudDownload className="w-4 h-4" />
+                    Restore This Device from Cloud
+                  </button>
+                ) : (
+                  <div className="flex flex-col gap-3 bg-amber-500/10 p-3 rounded-lg border border-amber-500/30">
+                    <div className="flex items-start gap-2 text-amber-300">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-bold">Replace this device's local data?</p>
+                        <p className="text-xs text-gray-300 mt-1 leading-relaxed">
+                          This discards unsynchronized changes on this device and downloads the current cloud library. It does not delete or change anything in Supabase or on your other devices.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          if (!user || restoring) return;
+                          setRestoring(true);
+                          try {
+                            const result = await syncEngine.restoreFromCloud(String(user.id));
+                            setShowRestoreConfirm(false);
+                            showNotice(`Restored ${result.pendingCount === 0 ? 'the cloud library' : 'cloud data'} on this device.`);
+                          } catch (err: any) {
+                            showNotice(err?.message || 'Cloud restore failed. Your previous local data was preserved when possible.', 'error');
+                          } finally {
+                            setRestoring(false);
+                          }
+                        }}
+                        disabled={restoring || syncState.isSyncing || !user}
+                        className="flex-1 bg-primary-accent text-black font-bold px-3 py-2 rounded-md text-xs disabled:opacity-50"
+                      >
+                        {restoring ? "Restoring..." : "Yes, Restore from Cloud"}
+                      </button>
+                      <button
+                        onClick={() => setShowRestoreConfirm(false)}
+                        disabled={restoring}
+                        className="flex-1 bg-bg-secondary text-gray-300 px-3 py-2 rounded-md text-xs disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
