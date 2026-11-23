@@ -15,7 +15,9 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [showDeleteSongsConfirm, setShowDeleteSongsConfirm] = useState(false);
-  const [showDeleteSetlistsConfirm, setShowDeleteSetlistsConfirm] = useState(false);\n  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);\n  const [restoring, setRestoring] = useState(false);
+  const [showDeleteSetlistsConfirm, setShowDeleteSetlistsConfirm] = useState(false);
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [notice, setNotice] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const { theme, setTheme, accent, setAccent } = useTheme();
   const { user } = useAuth();
