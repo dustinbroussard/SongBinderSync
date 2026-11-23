@@ -692,7 +692,7 @@ export interface BackupImportSummary {
 }
 
 function normalizeSongText(value: unknown): string {
-  return String(value ?? '').normalize('NFKC').trim().replace(/\\s+/g, ' ').toLocaleLowerCase();
+  return String(value ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 }
 
 /** Stable content identity for import matching; excludes presentation-only notes and formatting. */
