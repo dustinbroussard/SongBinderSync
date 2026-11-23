@@ -1,6 +1,6 @@
 import { X, Download, Upload, Check, Monitor, Moon, Sun, Palette, Trash2, AlertTriangle, Cloud, RefreshCw, CloudDownload } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
-import { db, clearAllSongsLocal, clearAllSetlistsLocal, bulkImportBackupLocal } from "../lib/db";
+import { db, clearAllSongsLocal, clearAllSetlistsLocal, bulkImportBackupLocal, previewBackupImport, type BackupImportSummary } from "../lib/db";
 import { v4 as uuidv4 } from "uuid";
 import { useTheme } from "./ThemeProvider";
 import { useAuth, useSyncStatus } from "./AuthProvider";
@@ -13,7 +13,7 @@ interface SettingsModalProps {
 
 export default function SettingsModal({ onClose }: SettingsModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);
+  const [importing, setImporting] = useState(false);\n  const [pendingImport, setPendingImport] = useState<{ songs: Song[]; setlists: Setlist[]; summary: BackupImportSummary } | null>(null);
   const [showDeleteSongsConfirm, setShowDeleteSongsConfirm] = useState(false);
   const [showDeleteSetlistsConfirm, setShowDeleteSetlistsConfirm] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
@@ -169,6 +169,23 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     }
   };
 
+  const confirmImport = async () => {
+    if (!pendingImport || importing) return;
+    setImporting(true);
+    try {
+      const result = await bulkImportBackupLocal(pendingImport.songs, pendingImport.setlists);
+      setPendingImport(null);
+      showNotice(
+        `Import complete: ${result.added} added, ${result.matched} matched, ${result.updated} updated, ${result.setlists} setlist(s) imported.`
+      );
+    } catch (err) {
+      console.error(err);
+      showNotice("Failed to import backup. Your existing library was not intentionally cleared.", "error");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleSyncNow = async (forceFullPull = false) => {
     if (!user) {
       showNotice("Please sign in to sync with the cloud.", "error");
@@ -308,6 +325,25 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 ref={fileInputRef}
                 onChange={handleImport}
               />
+              {pendingImport && (
+                <div className="mt-3 p-3 rounded-lg border border-primary-accent/30 bg-primary-accent/5 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold text-white">Backup import preview</p>
+                    <p className="text-xs text-gray-400 mt-1">Exact matches will reuse existing songs. Different lyrics or musical details remain separate songs, even when the title is the same.</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">New songs</span><p className="text-lg font-bold text-white">{pendingImport.summary.added}</p></div>
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">Already in library</span><p className="text-lg font-bold text-white">{pendingImport.summary.matched}</p></div>
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">Same ID, changed content</span><p className="text-lg font-bold text-white">{pendingImport.summary.updated}</p></div>
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">Same title, different content</span><p className="text-lg font-bold text-white">{pendingImport.summary.sameTitleDifferentContent}</p></div>
+                  </div>
+                  <p className="text-xs text-gray-400">{pendingImport.summary.setlists} setlist(s) will be imported. Their song references will be remapped to matched songs where appropriate.</p>
+                  <div className="flex gap-2">
+                    <button onClick={confirmImport} disabled={importing} className="flex-1 bg-primary-accent text-black font-bold px-3 py-2 rounded-md text-xs disabled:opacity-50">{importing ? "Importing..." : "Confirm Import"}</button>
+                    <button onClick={() => setPendingImport(null)} disabled={importing} className="flex-1 bg-bg-secondary text-gray-300 px-3 py-2 rounded-md text-xs disabled:opacity-50">Cancel</button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
