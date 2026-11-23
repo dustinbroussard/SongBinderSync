@@ -496,6 +496,14 @@ class SyncEngine {
 
         const blockedDeletionErrors: string[] = [];
         const uploadErrors: string[] = [];
+        // Only songs confirmed active in the completed cloud snapshot may be linked
+        // from a setlist. Local remoteId values can outlive a cloud soft-delete.
+        const activeRemoteSongLegacyIds = new Set(
+          songsRes.rows
+            .filter((row: any) => !row?.deleted_at)
+            .map((row: any) => String(row?.legacy_id || '').trim())
+            .filter(Boolean)
+        );
         let maxConfirmedVersion = maxPulledVersion;
 
         await db.transaction(
@@ -1982,7 +1990,9 @@ class SyncEngine {
             let allSongs = await db.songs.toArray();
             const songRemoteIdByLegacy = new Map<string, string>();
             for (const s of allSongs) {
-              if (s.remoteId) songRemoteIdByLegacy.set(s.id, s.remoteId);
+              if (s.remoteId && activeRemoteSongLegacyIds.has(s.id)) {
+                songRemoteIdByLegacy.set(s.id, s.remoteId);
+              }
             }
 
             // Safety: if any setlist references an active local song missing a remoteId, push it with concurrency first
@@ -2004,6 +2014,7 @@ class SyncEngine {
                 const res = await pushSingleSongWithConcurrency(missingSong);
                 if (res.activeInCloud && res.remoteId) {
                   songRemoteIdByLegacy.set(missingSong.id, res.remoteId);
+                  activeRemoteSongLegacyIds.add(missingSong.id);
                 }
               } catch (err: any) {
                 uploadErrors.push(`Referenced song "${missingSong.title || missingSong.id}" could not sync: ${err?.message || String(err)}`);
@@ -2014,7 +2025,9 @@ class SyncEngine {
               allSongs = await db.songs.toArray();
               songRemoteIdByLegacy.clear();
               for (const s of allSongs) {
-                if (s.remoteId) songRemoteIdByLegacy.set(s.id, s.remoteId);
+                if (s.remoteId && activeRemoteSongLegacyIds.has(s.id)) {
+                  songRemoteIdByLegacy.set(s.id, s.remoteId);
+                }
               }
             }
             const existingLocalSongIds = new Set(allSongs.map((s) => s.id));
@@ -2042,7 +2055,11 @@ class SyncEngine {
                   for (const extra of extraSongs) {
                     const extId = String(extra?.id || '').trim();
                     const extLegacy = String(extra?.legacy_id || '').trim();
-                    if (extId && extLegacy) supabaseSongIdToLegacyId.set(extId, extLegacy);
+                    // A remote setlist may still contain a relationship to a soft-deleted song.
+                    // Never reintroduce that relationship into the local active setlist.
+                    if (extId && extLegacy && !extra?.deleted_at) {
+                      supabaseSongIdToLegacyId.set(extId, extLegacy);
+                    }
                   }
                 }
                 for (const uuid of rawRefs) {
