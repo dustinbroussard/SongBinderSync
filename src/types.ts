@@ -13,6 +13,8 @@ export type SongMetadata = {
   productionNotes?: string; // Kept for backwards compatibility
   layoutMode?: 'standard' | 'split';
   fontFamily?: 'sans' | 'serif' | 'mono';
+  /** Internal marker for a preserved conflict/restoration version; never part of the song title. */
+  syncConflictStatus?: 'conflict' | 'restored';
 };
 
 export type Song = {
