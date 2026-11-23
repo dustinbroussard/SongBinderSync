@@ -21,6 +21,7 @@ export default function MainLayout() {
   const syncState = useSyncStatus();
   const { success, error: toastError, info } = useToast();
 
+  const syncPausedForDiagnostics = new URLSearchParams(window.location.search).get("pauseSync") === "1";
   const isSongs = location.pathname === "/";
   const isSetlists = location.pathname.startsWith("/setlists");
 
@@ -44,6 +45,7 @@ export default function MainLayout() {
   };
 
   const handleQuickSync = async () => {
+    if (syncPausedForDiagnostics) return;
     if (!user) {
       navigate('/signin');
       return;
@@ -111,9 +113,9 @@ export default function MainLayout() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleQuickSync}
-                disabled={syncState.isSyncing}
+                disabled={syncState.isSyncing || syncPausedForDiagnostics}
                 aria-label="Sync library with cloud"
-                title={syncState.pendingCount > 0 ? `Sync (${syncState.pendingCount} pending)` : "Sync library"}
+                title={syncPausedForDiagnostics ? "Sync is paused in diagnostic mode" : syncState.pendingCount > 0 ? `Sync (${syncState.pendingCount} pending)` : "Sync library"}
                 className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom disabled:opacity-60"
               >
                 {renderSyncIcon()}
@@ -127,9 +129,10 @@ export default function MainLayout() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleSignOut}
+                disabled={syncPausedForDiagnostics}
                 aria-label="Sign out"
-                className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom"
-                title="Sign out"
+                className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white bg-bg-secondary rounded-lg border border-border shadow-soft transition-all-custom disabled:opacity-40"
+                title={syncPausedForDiagnostics ? "Sign out is disabled during local queue inspection" : "Sign out"}
               >
                 <LogOut className="w-3.5 h-3.5 md:w-4 md:h-4" />
               </motion.button>
@@ -210,6 +213,12 @@ export default function MainLayout() {
           </Link>
         </nav>
       </header>
+
+      {syncPausedForDiagnostics && (
+        <div className="mx-3 md:mx-6 mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <strong>Read-only diagnostic mode.</strong> Cloud sync is paused in this tab. Please do not edit songs, setlists, import backups, or sign out until the local queue report is collected.
+        </div>
+      )}
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-hidden relative mt-2">

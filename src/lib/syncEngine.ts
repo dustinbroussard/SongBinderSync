@@ -58,7 +58,7 @@ function setlistsContentEqual(a: Setlist, b: { name: string; songIds: string[] }
   return true;
 }
 
-function appendCopyLabel(base: string, fallback: string, label: 'Conflict Copy' | 'Restored Copy'): string {
+function appendSetlistCopyLabel(base: string, fallback: string, label: 'Conflict Copy' | 'Restored Copy'): string {
   const clean = (base || '').trim() || fallback;
   if (label === 'Conflict Copy') {
     const suffix = ' (Conflict Copy)';
@@ -712,7 +712,8 @@ class SyncEngine {
                     ...local,
                     id: restoredId,
                     syncConflictKey: conflictKey,
-                    title: appendCopyLabel(local.title, 'Untitled Song', 'Restored Copy'),
+                    title: (local.title || '').trim() || 'Untitled Song',
+                    metadata: { ...(local.metadata || {}), syncConflictStatus: 'restored' },
                     remoteId: undefined,
                     baseVersion: undefined,
                     serverUpdatedAt: undefined,
@@ -1014,7 +1015,8 @@ class SyncEngine {
                 ...local,
                 id: conflictId,
                 syncConflictKey: conflictKey,
-                title: appendCopyLabel(local.title, 'Untitled Song', 'Conflict Copy'),
+                title: (local.title || '').trim() || 'Untitled Song',
+                metadata: { ...(local.metadata || {}), syncConflictStatus: 'conflict' },
                 remoteId: undefined,
                 baseVersion: undefined,
                 serverUpdatedAt: undefined,
@@ -1091,7 +1093,7 @@ class SyncEngine {
                     ...local,
                     id: restoredId,
                     syncConflictKey: conflictKey,
-                    name: appendCopyLabel(local.name, 'Untitled Setlist', 'Restored Copy'),
+                    name: appendSetlistCopyLabel(local.name, 'Untitled Setlist', 'Restored Copy'),
                     songIds: local.songIds.filter((sid) => !deletedSongIds.has(sid)),
                     remoteId: undefined,
                     baseVersion: undefined,
@@ -1394,7 +1396,7 @@ class SyncEngine {
                 ...local,
                 id: conflictId,
                 syncConflictKey: conflictKey,
-                name: appendCopyLabel(local.name, 'Untitled Setlist', 'Conflict Copy'),
+                name: appendSetlistCopyLabel(local.name, 'Untitled Setlist', 'Conflict Copy'),
                 songIds: local.songIds.filter((sid) => !deletedSongIds.has(sid)),
                 remoteId: undefined,
                 baseVersion: undefined,
@@ -1747,7 +1749,8 @@ class SyncEngine {
                     ...latest,
                     id: restoredId,
                     syncConflictKey: conflictKey,
-                    title: appendCopyLabel(latest.title, 'Untitled Song', 'Restored Copy'),
+                    title: (latest.title || '').trim() || 'Untitled Song',
+                    metadata: { ...(latest.metadata || {}), syncConflictStatus: 'restored' },
                     remoteId: undefined,
                     baseVersion: undefined,
                     serverUpdatedAt: undefined,
@@ -1789,7 +1792,8 @@ class SyncEngine {
                   ...latest,
                   id: conflictId,
                   syncConflictKey: conflictKey,
-                  title: appendCopyLabel(latest.title, 'Untitled Song', 'Conflict Copy'),
+                  title: (latest.title || '').trim() || 'Untitled Song',
+                  metadata: { ...(latest.metadata || {}), syncConflictStatus: 'conflict' },
                   remoteId: undefined,
                   baseVersion: undefined,
                   serverUpdatedAt: undefined,
@@ -2235,7 +2239,7 @@ class SyncEngine {
                       ...latest,
                       id: restoredId,
                       syncConflictKey: conflictKey,
-                      name: appendCopyLabel(latest.name, 'Untitled Setlist', 'Restored Copy'),
+                      name: appendSetlistCopyLabel(latest.name, 'Untitled Setlist', 'Restored Copy'),
                       remoteId: undefined,
                       baseVersion: undefined,
                       serverUpdatedAt: undefined,
@@ -2270,7 +2274,7 @@ class SyncEngine {
                     ...latest,
                     id: conflictId,
                     syncConflictKey: conflictKey,
-                    name: appendCopyLabel(latest.name, 'Untitled Setlist', 'Conflict Copy'),
+                    name: appendSetlistCopyLabel(latest.name, 'Untitled Setlist', 'Conflict Copy'),
                     remoteId: undefined,
                     baseVersion: undefined,
                     serverUpdatedAt: undefined,

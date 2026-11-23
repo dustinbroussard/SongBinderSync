@@ -1,6 +1,6 @@
 import { X, Download, Upload, Check, Monitor, Moon, Sun, Palette, Trash2, AlertTriangle, Cloud, RefreshCw, CloudDownload } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
-import { db, clearAllSongsLocal, clearAllSetlistsLocal, bulkImportBackupLocal } from "../lib/db";
+import { db, clearAllSongsLocal, clearAllSetlistsLocal, bulkImportBackupLocal, previewBackupImport, type BackupImportSummary } from "../lib/db";
 import { v4 as uuidv4 } from "uuid";
 import { useTheme } from "./ThemeProvider";
 import { useAuth, useSyncStatus } from "./AuthProvider";
@@ -14,11 +14,16 @@ interface SettingsModalProps {
 export default function SettingsModal({ onClose }: SettingsModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const [pendingImport, setPendingImport] = useState<{ songs: Song[]; setlists: Setlist[]; summary: BackupImportSummary } | null>(null);
   const [showDeleteSongsConfirm, setShowDeleteSongsConfirm] = useState(false);
   const [showDeleteSetlistsConfirm, setShowDeleteSetlistsConfirm] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [notice, setNotice] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [inspectingQueue, setInspectingQueue] = useState(false);
+  const [queueDiagnostics, setQueueDiagnostics] = useState<any | null>(null);
+  const diagnosticMode = typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("pauseSync") === "1";
   const { theme, setTheme, accent, setAccent } = useTheme();
   const { user } = useAuth();
   const syncState = useSyncStatus();
@@ -130,6 +135,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     if (!file) return;
 
     setImporting(true);
+    setPendingImport(null);
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
@@ -156,11 +162,15 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
           }))
         : [];
 
-      await bulkImportBackupLocal(importedSongs, importedSetlists);
-      showNotice(`Imported ${importedSongs.length} song(s) and ${importedSetlists.length} setlist(s).`);
+      // Preview is deliberately read-only: nothing is written until the user confirms.
+      const summary = await previewBackupImport(importedSongs, importedSetlists);
+      setPendingImport({ songs: importedSongs, setlists: importedSetlists, summary });
+      showNotice(
+        `Backup preview ready: ${summary.added} new, ${summary.matched} matched, and ${summary.updated} updated song(s).`
+      );
     } catch (err) {
       console.error(err);
-      showNotice("Failed to import backup. Please ensure the file is valid JSON.", "error");
+      showNotice("Failed to read backup. Please ensure the file is valid JSON.", "error");
     } finally {
       setImporting(false);
       if (fileInputRef.current) {
@@ -169,7 +179,128 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     }
   };
 
+  const confirmImport = async () => {
+    if (!pendingImport || importing) return;
+    setImporting(true);
+    try {
+      const result = await bulkImportBackupLocal(pendingImport.songs, pendingImport.setlists);
+      setPendingImport(null);
+      showNotice(
+        `Import complete: ${result.added} added, ${result.matched} matched, ${result.updated} updated, ${result.setlists} setlist(s) imported.`
+      );
+    } catch (err) {
+      console.error(err);
+      showNotice("Failed to import backup. Your existing library was not intentionally cleared.", "error");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const inspectPendingSyncQueue = async () => {
+    if (!diagnosticMode || inspectingQueue) return;
+    setInspectingQueue(true);
+    try {
+      const [songs, setlists, outbox, tombstones, syncMeta] = await Promise.all([
+        db.songs.toArray(),
+        db.setlists.toArray(),
+        db.syncOutbox.toArray(),
+        db.tombstones.toArray(),
+        db.syncMeta.get("state")
+      ]);
+
+      const songsById = new Map(songs.map((song) => [song.id, song]));
+      const setlistsById = new Map(setlists.map((setlist) => [setlist.id, setlist]));
+      const groupedCounts: Record<string, number> = {};
+      const queueItems = outbox
+        .slice()
+        .sort((a, b) => a.queuedAt - b.queuedAt)
+        .map((item) => {
+          const groupKey = `${item.entityType}:${item.op}:${item.status || "pending"}`;
+          groupedCounts[groupKey] = (groupedCounts[groupKey] || 0) + 1;
+          const record = item.entityType === "song"
+            ? songsById.get(item.entityId)
+            : setlistsById.get(item.entityId);
+          const tombstone = tombstones.find((candidate) =>
+            candidate.id === item.entityId && candidate.type === item.entityType
+          );
+          return {
+            key: item.key,
+            entityType: item.entityType,
+            operation: item.op,
+            title: item.entityType === "song"
+              ? (record as Song | undefined)?.title || tombstone?.titleSnapshot || "(local song record missing)"
+              : (record as Setlist | undefined)?.name || tombstone?.titleSnapshot || "(local setlist record missing)",
+            entityId: item.entityId,
+            queuedAt: new Date(item.queuedAt).toISOString(),
+            attempts: item.attempts,
+            status: item.status || "pending",
+            lastError: item.lastError || null,
+            conflictKey: item.conflictKey || null,
+            remoteId: item.remoteId || (record as any)?.remoteId || null,
+            baseVersion: item.baseVersion || (record as any)?.baseVersion || null
+          };
+        });
+
+      const report = {
+        reportType: "SongBinder local sync queue diagnostics",
+        generatedAt: new Date().toISOString(),
+        safety: {
+          diagnosticMode: true,
+          automaticSyncStarted: false,
+          cloudWasModifiedByThisInspection: false,
+          lyricsIncluded: false
+        },
+        localCounts: {
+          songs: songs.length,
+          setlists: setlists.length,
+          tombstones: tombstones.length,
+          pendingOperations: outbox.length
+        },
+        queuedOperationsByType: groupedCounts,
+        syncCheckpoint: syncMeta ? {
+          lastSyncVersion: syncMeta.lastSyncVersion,
+          lastSyncedAt: syncMeta.lastSyncedAt ? new Date(syncMeta.lastSyncedAt).toISOString() : null,
+          lastReconciledAt: syncMeta.lastReconciledAt ? new Date(syncMeta.lastReconciledAt).toISOString() : null
+        } : null,
+        queueItems,
+        tombstones: tombstones.map((tombstone) => ({
+          id: tombstone.id,
+          type: tombstone.type,
+          title: tombstone.titleSnapshot || null,
+          deletedAt: new Date(tombstone.deletedAt).toISOString(),
+          baselineStatus: tombstone.baselineStatus || null,
+          lastError: tombstone.lastError || null,
+          conflictKey: tombstone.conflictKey || null,
+          remoteId: tombstone.remoteId || null,
+          baseVersion: tombstone.baseVersion || null
+        }))
+      };
+      setQueueDiagnostics(report);
+      showNotice(`Read ${outbox.length} pending operation(s) from this device. No cloud sync was started.`);
+    } catch (err) {
+      console.error(err);
+      showNotice("Could not inspect the local sync queue.", "error");
+    } finally {
+      setInspectingQueue(false);
+    }
+  };
+
+  const downloadQueueDiagnostics = () => {
+    if (!queueDiagnostics || !diagnosticMode) return;
+    const blob = new Blob([JSON.stringify(queueDiagnostics, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `songbinder_sync_queue_diagnostics_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleSyncNow = async (forceFullPull = false) => {
+    if (diagnosticMode) {
+      showNotice("Sync is paused in diagnostic mode. Download the local queue report first.", "error");
+      return;
+    }
     if (!user) {
       showNotice("Please sign in to sync with the cloud.", "error");
       return;
@@ -295,7 +426,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
               <button
                 onClick={() => fileInputRef.current?.click()}
-                disabled={importing}
+                disabled={importing || diagnosticMode}
                 className="w-full flex items-center justify-center gap-2 bg-primary-accent text-black font-medium px-4 py-2 rounded-lg hover:bg-opacity-90 transition-all-custom disabled:opacity-50"
               >
                 <Upload className="w-4 h-4" />
@@ -308,8 +439,66 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 ref={fileInputRef}
                 onChange={handleImport}
               />
+              {pendingImport && (
+                <div className="mt-3 p-3 rounded-lg border border-primary-accent/30 bg-primary-accent/5 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold text-white">Backup import preview</p>
+                    <p className="text-xs text-gray-400 mt-1">Exact matches will reuse existing songs. Different lyrics or musical details remain separate songs, even when the title is the same.</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">New songs</span><p className="text-lg font-bold text-white">{pendingImport.summary.added}</p></div>
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">Already in library</span><p className="text-lg font-bold text-white">{pendingImport.summary.matched}</p></div>
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">Same ID, changed content</span><p className="text-lg font-bold text-white">{pendingImport.summary.updated}</p></div>
+                    <div className="rounded bg-bg-secondary p-2"><span className="text-gray-400">Same title, different content</span><p className="text-lg font-bold text-white">{pendingImport.summary.sameTitleDifferentContent}</p></div>
+                  </div>
+                  <p className="text-xs text-gray-400">{pendingImport.summary.setlists} setlist(s) will be imported. Their song references will be remapped to matched songs where appropriate.</p>
+                  <div className="flex gap-2">
+                    <button onClick={confirmImport} disabled={importing || diagnosticMode} className="flex-1 bg-primary-accent text-black font-bold px-3 py-2 rounded-md text-xs disabled:opacity-50">{importing ? "Importing..." : "Confirm Import"}</button>
+                    <button onClick={() => setPendingImport(null)} disabled={importing} className="flex-1 bg-bg-secondary text-gray-300 px-3 py-2 rounded-md text-xs disabled:opacity-50">Cancel</button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
+
+          {diagnosticMode && (
+            <div className="bg-amber-500/10 p-4 rounded-lg border border-amber-500/40 space-y-3">
+              <h3 className="font-medium text-amber-200 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4" />
+                Read-only local queue inspection
+              </h3>
+              <p className="text-xs text-gray-300 leading-relaxed">
+                This tab is running with cloud sync paused. Inspecting the queue only reads this device's IndexedDB; it does not upload, delete, or change songs or setlists.
+              </p>
+              <button
+                onClick={inspectPendingSyncQueue}
+                disabled={inspectingQueue}
+                className="w-full flex items-center justify-center gap-2 bg-bg-secondary border border-amber-400/40 text-amber-100 font-semibold px-4 py-2 rounded-lg hover:border-amber-300 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${inspectingQueue ? "animate-spin" : ""}`} />
+                {inspectingQueue ? "Reading local queue..." : "Inspect Pending Sync Queue"}
+              </button>
+              {queueDiagnostics && (
+                <div className="rounded-lg bg-bg-secondary border border-border/60 p-3 space-y-2 text-xs">
+                  <p className="text-white font-semibold">Local snapshot captured</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><span className="text-gray-500">Songs</span><p className="text-white font-bold text-lg">{queueDiagnostics.localCounts.songs}</p></div>
+                    <div><span className="text-gray-500">Setlists</span><p className="text-white font-bold text-lg">{queueDiagnostics.localCounts.setlists}</p></div>
+                    <div><span className="text-gray-500">Pending operations</span><p className="text-white font-bold text-lg">{queueDiagnostics.localCounts.pendingOperations}</p></div>
+                    <div><span className="text-gray-500">Tombstones</span><p className="text-white font-bold text-lg">{queueDiagnostics.localCounts.tombstones}</p></div>
+                  </div>
+                  <p className="text-gray-400">The report includes queued record titles, operation types, retry counts, and error details. It does not include song lyrics or authentication credentials.</p>
+                  <button
+                    onClick={downloadQueueDiagnostics}
+                    className="w-full flex items-center justify-center gap-2 bg-primary-accent text-black font-bold px-4 py-2 rounded-lg"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download Queue Report
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="bg-bg-tertiary p-4 rounded-lg border border-white border-opacity-5">
             <h3 className="font-medium text-white mb-2 flex items-center gap-2">
@@ -317,9 +506,11 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
               Cloud Sync
             </h3>
             <p className="text-sm text-gray-400 mb-3 font-body leading-relaxed">
-              {user
-                ? `Signed in as ${user.email}. Changes sync automatically and preserve offline conflicts as copies.`
-                : "Sign in to enable automatic multi-device sync with Supabase."}
+              {diagnosticMode
+                ? "Read-only diagnostic mode is active. Sync and restore actions are disabled in this tab."
+                : user
+                  ? `Signed in as ${user.email}. Changes sync automatically and preserve offline conflicts as copies.`
+                  : "Sign in to enable automatic multi-device sync with Supabase."}
             </p>
 
             {user && (
@@ -344,7 +535,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => handleSyncNow(false)}
-                disabled={syncState.isSyncing || !user}
+                disabled={diagnosticMode || syncState.isSyncing || !user}
                 className="w-full flex items-center justify-center gap-2 bg-bg-secondary border border-white border-opacity-10 text-white font-medium px-4 py-2 rounded-lg hover:border-primary-accent transition-all-custom disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <RefreshCw className={`w-4 h-4 text-primary-accent ${syncState.isSyncing ? 'animate-spin' : ''}`} />
@@ -353,7 +544,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
               <button
                 onClick={() => handleSyncNow(true)}
-                disabled={syncState.isSyncing || !user}
+                disabled={diagnosticMode || syncState.isSyncing || !user}
                 className="w-full flex items-center justify-center gap-2 bg-bg-secondary border border-white border-opacity-10 text-gray-300 text-xs font-medium px-4 py-2 rounded-lg hover:border-primary-accent transition-all-custom disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Download className="w-3.5 h-3.5 text-primary-accent" />
@@ -367,7 +558,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 {!showRestoreConfirm ? (
                   <button
                     onClick={() => setShowRestoreConfirm(true)}
-                    disabled={syncState.isSyncing || restoring || !user}
+                    disabled={diagnosticMode || syncState.isSyncing || restoring || !user}
                     className="w-full flex items-center justify-center gap-2 bg-bg-secondary border border-primary-accent/40 text-primary-accent font-semibold px-4 py-2 rounded-lg hover:bg-primary-accent/10 transition-all-custom disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <CloudDownload className="w-4 h-4" />
@@ -399,7 +590,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                             setRestoring(false);
                           }
                         }}
-                        disabled={restoring || syncState.isSyncing || !user}
+                        disabled={diagnosticMode || restoring || syncState.isSyncing || !user}
                         className="flex-1 bg-primary-accent text-black font-bold px-3 py-2 rounded-md text-xs disabled:opacity-50"
                       >
                         {restoring ? "Restoring..." : "Yes, Restore from Cloud"}
@@ -425,6 +616,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
             </h3>
             <p className="text-[11px] text-danger/70 mb-4 font-medium">Use with caution. These actions are irreversible.</p>
 
+            {!diagnosticMode && (
             <div className="flex flex-col gap-2">
               {!showDeleteSongsConfirm ? (
                 <button
@@ -482,6 +674,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
       </div>

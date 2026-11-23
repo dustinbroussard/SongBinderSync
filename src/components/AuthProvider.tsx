@@ -16,6 +16,11 @@ type AuthContextType = {
   signOut: () => Promise<void>;
 };
 
+function isSyncPausedForDiagnostics(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("pauseSync") === "1";
+}
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -31,7 +36,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!mounted) return;
         const currentUser = session?.user ?? null;
         setUser(currentUser);
-        syncEngine.startLifecycle(currentUser?.id ?? null);
+        if (isSyncPausedForDiagnostics()) {
+          // Safe inspection mode must never start background sync or upload the local outbox.
+          syncEngine.stopLifecycle();
+          await syncEngine.refreshPendingCount();
+        } else {
+          syncEngine.startLifecycle(currentUser?.id ?? null);
+        }
       } catch (error) {
         console.error("Error checking session:", error);
       } finally {
@@ -47,7 +58,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(nextUser);
       setLoading(false);
 
-      if (event === "SIGNED_OUT") {
+      if (isSyncPausedForDiagnostics()) {
+        // Keep this tab read-only even if Supabase refreshes or changes the auth session.
+        syncEngine.stopLifecycle();
+        syncEngine.refreshPendingCount().catch(() => {});
+      } else if (event === "SIGNED_OUT") {
         syncEngine.stopLifecycle();
         syncEngine.startLifecycle(null);
       } else if (
