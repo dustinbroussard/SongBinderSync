@@ -215,7 +215,14 @@ export default function SongsLibrary() {
                 onClick={() => navigate(`/song/${song.id}`)}
               >
                 <div className="flex-1 min-w-0 pr-1">
-                  <h3 className="text-gray-100 font-semibold text-sm leading-tight truncate">{song.title}</h3>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h3 className="text-gray-100 font-semibold text-sm leading-tight truncate">{song.title}</h3>
+                    {(song.syncConflictKey || song.metadata?.syncConflictStatus) && (
+                      <span className="shrink-0 text-[8px] font-bold uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded">
+                        {song.metadata?.syncConflictStatus === 'restored' ? 'Restored copy' : 'Conflict copy'}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2 mt-1 transition-all-custom">
                     {song.metadata?.key && (
                       <span className="text-[9px] font-black uppercase tracking-wider bg-bg-tertiary text-primary-accent px-1.5 py-0.5 rounded border border-primary-accent/20">
