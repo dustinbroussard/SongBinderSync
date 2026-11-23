@@ -683,29 +683,150 @@ export async function createSetlistWithNewSongsLocal(
   notifyLocalMutation();
 }
 
-export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]): Promise<void> {
+export interface BackupImportSummary {
+  added: number;
+  matched: number;
+  updated: number;
+  sameTitleDifferentContent: number;
+  setlists: number;
+}
+
+function normalizeSongText(value: unknown): string {
+  return String(value ?? '').normalize('NFKC').trim().replace(/\\s+/g, ' ').toLocaleLowerCase();
+}
+
+/** Stable content identity for import matching; excludes presentation-only notes and formatting. */
+function songImportFingerprint(song: Song): string {
+  const metadata = song.metadata || {};
+  return JSON.stringify([
+    normalizeSongText(song.title),
+    normalizeSongText(song.lyrics),
+    typeof song.bpm === 'number' ? song.bpm : null,
+    normalizeSongText(metadata.key),
+    typeof metadata.tempo === 'number' ? metadata.tempo : null,
+    normalizeSongText(metadata.timeSignature)
+  ]);
+}
+
+export async function previewBackupImport(songs: Song[], setlists: Setlist[]): Promise<BackupImportSummary> {
+  const existingSongs = await db.songs.toArray();
+  const byId = new Map(existingSongs.map((song) => [song.id, song]));
+  const byFingerprint = new Map<string, Song>();
+  const byTitle = new Map<string, Song[]>();
+  for (const song of existingSongs) {
+    const fingerprint = songImportFingerprint(song);
+    if (!byFingerprint.has(fingerprint)) byFingerprint.set(fingerprint, song);
+    const title = normalizeSongText(song.title);
+    byTitle.set(title, [...(byTitle.get(title) || []), song]);
+  }
+
+  const seenIncoming = new Set<string>();
+  const summary: BackupImportSummary = {
+    added: 0,
+    matched: 0,
+    updated: 0,
+    sameTitleDifferentContent: 0,
+    setlists: setlists.length
+  };
+
+  for (const song of songs) {
+    const existingById = byId.get(song.id);
+    const fingerprint = songImportFingerprint(song);
+    if (existingById) {
+      if (songImportFingerprint(existingById) === fingerprint) summary.matched++;
+      else summary.updated++;
+      continue;
+    }
+    if (byFingerprint.has(fingerprint) || seenIncoming.has(fingerprint)) {
+      summary.matched++;
+      continue;
+    }
+    summary.added++;
+    if ((byTitle.get(normalizeSongText(song.title)) || []).length > 0) {
+      summary.sameTitleDifferentContent++;
+    }
+    seenIncoming.add(fingerprint);
+  }
+  return summary;
+}
+
+export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]): Promise<BackupImportSummary> {
+  const summary: BackupImportSummary = {
+    added: 0,
+    matched: 0,
+    updated: 0,
+    sameTitleDifferentContent: 0,
+    setlists: setlists.length
+  };
+
   await db.transaction('rw', db.songs, db.setlists, db.tombstones, db.syncOutbox, async () => {
     const now = Date.now();
+    const existingSongs = await db.songs.toArray();
+    const existingById = new Map(existingSongs.map((song) => [song.id, song]));
+    const existingByFingerprint = new Map<string, Song>();
+    const existingByTitle = new Map<string, Song[]>();
+    for (const song of existingSongs) {
+      const fingerprint = songImportFingerprint(song);
+      if (!existingByFingerprint.has(fingerprint)) existingByFingerprint.set(fingerprint, song);
+      const title = normalizeSongText(song.title);
+      existingByTitle.set(title, [...(existingByTitle.get(title) || []), song]);
+    }
 
-    if (songs.length > 0) {
-      const existingSongs = await db.songs.bulkGet(songs.map((s) => s.id));
-      const mergedSongs: Song[] = songs.map((s, idx) => {
-        const existing = existingSongs[idx];
-        return {
-          ...s,
-          remoteId: existing?.remoteId,
-          baseVersion: existing?.baseVersion,
-          serverUpdatedAt: existing?.serverUpdatedAt,
-          dirty: 1
-        };
-      });
-      await db.songs.bulkPut(mergedSongs);
-      await db.tombstones.bulkDelete(mergedSongs.map((s) => s.id));
+    const canonicalIdByImportedId = new Map<string, string>();
+    const incomingByFingerprint = new Map<string, string>();
+    const songsToWrite: Song[] = [];
+
+    for (const song of songs) {
+      const existingBySameId = existingById.get(song.id);
+      const fingerprint = songImportFingerprint(song);
+      if (existingBySameId) {
+        canonicalIdByImportedId.set(song.id, existingBySameId.id);
+        if (songImportFingerprint(existingBySameId) === fingerprint) {
+          summary.matched++;
+        } else {
+          songsToWrite.push({
+            ...song,
+            remoteId: existingBySameId.remoteId,
+            baseVersion: existingBySameId.baseVersion,
+            serverUpdatedAt: existingBySameId.serverUpdatedAt,
+            dirty: 1
+          });
+          summary.updated++;
+        }
+        continue;
+      }
+
+      const exactExisting = existingByFingerprint.get(fingerprint);
+      if (exactExisting) {
+        canonicalIdByImportedId.set(song.id, exactExisting.id);
+        summary.matched++;
+        continue;
+      }
+
+      const exactIncomingId = incomingByFingerprint.get(fingerprint);
+      if (exactIncomingId) {
+        canonicalIdByImportedId.set(song.id, exactIncomingId);
+        summary.matched++;
+        continue;
+      }
+
+      if ((existingByTitle.get(normalizeSongText(song.title)) || []).length > 0) {
+        summary.sameTitleDifferentContent++;
+      }
+      canonicalIdByImportedId.set(song.id, song.id);
+      incomingByFingerprint.set(fingerprint, song.id);
+      songsToWrite.push({ ...song, dirty: 1 });
+      summary.added++;
+    }
+
+    if (songsToWrite.length > 0) {
+      await db.songs.bulkPut(songsToWrite);
+      await db.tombstones.bulkDelete(songsToWrite.map((song) => song.id));
       await db.syncOutbox.bulkPut(
-        mergedSongs.map((s) => ({
-          key: `song:${s.id}`,
+        songsToWrite.map((song) => ({
+          key: `song:${song.id}`,
           entityType: 'song' as const,
-          entityId: s.id,
+          entityId: song.id,
           op: 'upsert' as const,
           queuedAt: now,
           attempts: 0
@@ -714,11 +835,15 @@ export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]):
     }
 
     if (setlists.length > 0) {
-      const existingSetlists = await db.setlists.bulkGet(setlists.map((sl) => sl.id));
-      const mergedSetlists: Setlist[] = setlists.map((sl, idx) => {
+      const existingSetlists = await db.setlists.bulkGet(setlists.map((setlist) => setlist.id));
+      const mergedSetlists: Setlist[] = setlists.map((setlist, idx) => {
         const existing = existingSetlists[idx];
+        const remappedSongIds = (setlist.songIds || []).map((songId) =>
+          canonicalIdByImportedId.get(songId) || songId
+        );
         return {
-          ...sl,
+          ...setlist,
+          songIds: [...new Set(remappedSongIds)],
           remoteId: existing?.remoteId,
           baseVersion: existing?.baseVersion,
           serverUpdatedAt: existing?.serverUpdatedAt,
@@ -726,12 +851,12 @@ export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]):
         };
       });
       await db.setlists.bulkPut(mergedSetlists);
-      await db.tombstones.bulkDelete(mergedSetlists.map((sl) => sl.id));
+      await db.tombstones.bulkDelete(mergedSetlists.map((setlist) => setlist.id));
       await db.syncOutbox.bulkPut(
-        mergedSetlists.map((sl) => ({
-          key: `setlist:${sl.id}`,
+        mergedSetlists.map((setlist) => ({
+          key: `setlist:${setlist.id}`,
           entityType: 'setlist' as const,
-          entityId: sl.id,
+          entityId: setlist.id,
           op: 'upsert' as const,
           queuedAt: now,
           attempts: 0
@@ -741,4 +866,5 @@ export async function bulkImportBackupLocal(songs: Song[], setlists: Setlist[]):
   });
 
   notifyLocalMutation();
+  return summary;
 }
